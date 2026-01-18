@@ -1,0 +1,1 @@
+# SF6-Afk-Farm-Notifier
