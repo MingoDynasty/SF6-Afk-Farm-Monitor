@@ -22,7 +22,7 @@ USER_CODE = 2885430127
 DATABASE_FILENAME = "database.json"
 
 
-def update_database(data):
+def write_to_database(data):
     with open(DATABASE_FILENAME, "w") as file:
         json_string = json.dumps(data, indent=2)
         file.write(json_string)
@@ -41,7 +41,8 @@ def main() -> None:
 
     # On first init, we don't have any previous data.
     if not Path(DATABASE_FILENAME).exists():
-        update_database(current_character_to_battle_count)
+        write_to_database(current_character_to_battle_count)
+        return
 
     # Compare current data with previous data
     with open(DATABASE_FILENAME) as file:
@@ -77,7 +78,7 @@ def main() -> None:
 
     # Update database with current data
     if data_differs:
-        update_database(current_character_to_battle_count)
+        write_to_database(current_character_to_battle_count)
 
     # TODO: send notification here
     if send_notification:
