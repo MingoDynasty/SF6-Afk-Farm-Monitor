@@ -1,0 +1,22 @@
+#
+# This is an example configuration file.
+#
+
+# User code of the CFN profile to monitor
+user_code = 1234567890
+
+# How often to poll for updates (in seconds)
+# Caution: more frequent polling might result in CFN throttling your Buckler ID
+polling_interval = 60  # 1 minute
+
+# How long of a duration (in seconds) should we expect the battle count to increase
+battle_count_timeout = 180  # 3 minutes
+
+# CFN configuration
+buckler_id = ""
+buckler_r_id = ""
+buckler_praise_date = 1234567890123
+
+# Pushover configuration
+pushover_app_key = ""
+pushover_user_key = ""
