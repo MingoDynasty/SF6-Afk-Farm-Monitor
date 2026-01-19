@@ -510,4 +510,5 @@ __marimo__/
 
 config.toml
 database.json
+response.json
 ignore/

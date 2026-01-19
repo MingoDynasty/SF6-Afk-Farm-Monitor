@@ -36,5 +36,18 @@ def get_character_win_rates(user_code) -> WinRateResponse:
         f"https://www.streetfighter.com/6/buckler/profile/{user_code}/play"
     )
     response = requests.request("POST", url, headers=headers, data=payload)
+    logger.debug(response)
+    logger.debug(response.text)
+
+    # TODO: for debugging. Sometimes the script crashes, but it looks like it's caused by malformed response.
+    save_to_file(response.json())
+
     response_json = response.json()["response"]
     return WinRateResponse.model_validate(response_json)
+
+
+def save_to_file(data):
+    with open("response.json", "w") as file:
+        json_string = json.dumps(data, indent=2)
+        file.write(json_string)
+    return
