@@ -3,8 +3,8 @@ import sys
 import time
 
 import schedule
-from config import config
 
+from config import config
 from task import do_task
 
 # Logging setup
