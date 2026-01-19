@@ -66,7 +66,7 @@ def do_task() -> None:
 
     duration = get_duration_since_file_modified(DATABASE_FILENAME)
     if duration.total_seconds() >= config.battle_count_timeout and not data_differs:
-        message = f"It has been ({humanize.precisedelta(duration)}) without an update. Probably the afk farm is stuck."
+        message = f"It has been ({humanize.precisedelta(duration)}) without an update. The afk farm might be stuck."
         logger.warning(message)
         notifications_to_send.append(message)
 
