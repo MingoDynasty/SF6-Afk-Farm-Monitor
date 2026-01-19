@@ -10,7 +10,7 @@ user_code = 1234567890
 polling_interval = 60  # 1 minute
 
 # How long of a duration (in seconds) should we expect the battle count to increase
-battle_count_timeout = 180  # 3 minutes
+battle_count_timeout = 300  # 5 minutes
 
 # CFN configuration
 buckler_id = ""
