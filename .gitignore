@@ -512,3 +512,4 @@ config.toml
 database.json
 response.json
 ignore/
+logs/
