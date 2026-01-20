@@ -25,11 +25,17 @@ def main():
     console_handler.setLevel(logging.INFO)
     logging.getLogger().addHandler(console_handler)
 
-    # Log to File
-    file_handler = logging.FileHandler("debug.log")
-    file_handler.setFormatter(formatter)
-    file_handler.setLevel(logging.DEBUG)
-    logging.getLogger().addHandler(file_handler)
+    # Log to File - Info
+    info_file_handler = logging.FileHandler("info.log")
+    info_file_handler.setFormatter(formatter)
+    info_file_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(info_file_handler)
+
+    # Log to File - Debug
+    debug_file_handler = logging.FileHandler("debug.log")
+    debug_file_handler.setFormatter(formatter)
+    debug_file_handler.setLevel(logging.DEBUG)
+    logging.getLogger().addHandler(debug_file_handler)
 
     logger = logging.getLogger(__name__)
 

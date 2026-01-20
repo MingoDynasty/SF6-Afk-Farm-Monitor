@@ -37,16 +37,5 @@ def get_character_win_rates(user_code) -> WinRateResponse:
     )
     response = requests.request("POST", url, headers=headers, data=payload)
     response.raise_for_status()
-
-    # Optional, but I like to use this to see the status at a glance.
-    save_to_file(response.json())
-
     response_json = response.json()["response"]
     return WinRateResponse.model_validate(response_json)
-
-
-def save_to_file(data):
-    with open("response.json", "w") as file:
-        json_string = json.dumps(data, indent=2)
-        file.write(json_string)
-    return
