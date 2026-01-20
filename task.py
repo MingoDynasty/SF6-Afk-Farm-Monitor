@@ -4,6 +4,7 @@ from collections import deque
 from pathlib import Path
 
 import humanize
+from requests import HTTPError
 from sortedcontainers import SortedDict
 
 from api_service import get_character_win_rates
@@ -26,7 +27,14 @@ def write_to_database(data):
 
 
 def do_task() -> None:
-    win_rate_response = get_character_win_rates(config.user_code)
+    try:
+        win_rate_response = get_character_win_rates(config.user_code)
+    except HTTPError:
+        message = "Capcom Buckler website down?"
+        logger.error(message, exc_info=True)
+        notifications_to_send.append(message)
+        return
+
     current_character_to_battle_count = SortedDict()
     for character_win_rate in win_rate_response.character_win_rates:
         if character_win_rate.character_name == "Any":
