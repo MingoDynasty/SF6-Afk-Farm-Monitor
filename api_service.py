@@ -9,6 +9,7 @@ from model import WinRateResponse
 logger = logging.getLogger(__name__)
 
 url = "https://www.streetfighter.com/6/buckler/api/profile/play/act/characterwinrate"
+REQUEST_TIMEOUT = (10, 30)
 
 # TODO: target season ID needs to be updated to the current season.
 #  Maybe move to config file?
@@ -37,7 +38,9 @@ def get_character_win_rates(user_code) -> WinRateResponse:
     headers["Referer"] = (
         f"https://www.streetfighter.com/6/buckler/profile/{user_code}/play"
     )
-    response = requests.request("POST", url, headers=headers, data=payload)
+    response = requests.request(
+        "POST", url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT
+    )
     response.raise_for_status()
     response_json = response.json()["response"]
 
