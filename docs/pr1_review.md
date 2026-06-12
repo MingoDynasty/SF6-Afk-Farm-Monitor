@@ -4,9 +4,9 @@
 - **Reviewed:** 2026-06-12, at commit `f98f903` (commits: `bc55165`, `a7e9ca4`, `f98f903`)
 - **Reviewed against:** `docs/CODEBASE_REVIEW.md` Unified roadmap steps 1–2,
   `docs/ALERT_DEDUPLICATION_PROPOSAL.md` §8 client interface, `docs/IMPLEMENTATION_LOG.md`
-- **Verdict:** **changes-requested** — one low-severity must-fix (F1); everything
-  else verified clean.
-- **Resolution status:** F1 resolved by `a6d252d`; gates re-run after the fix.
+- **Verdict:** **LGTM** (re-review 2026-06-12 at `a68e93a`) — F1 resolved by
+  `a6d252d` and independently verified; all gates re-run clean by the reviewer.
+- *First-review verdict was changes-requested with one low-severity must-fix (F1).*
 
 ## How to use this doc
 
@@ -59,6 +59,19 @@ This doc is self-contained; you do not need the original review conversation.
   and `cancel_by_tag` returned `None` / `{}` / `False` / `False`, logged
   sanitized `returned non-object JSON: HTTP 200` messages, and printed
   `NON_OBJECT_JSON_DEMO_SURVIVED`.
+- **Reviewer re-verification (2026-06-12, re-review at `a68e93a`):**
+  independently reproduced the same demo with the harness mirroring the app's
+  logging config (root DEBUG, urllib3 INFO per `app.py:16-17`): all four
+  methods returned safe values, nothing raised, exactly 4 sanitized
+  `non-object JSON` error lines, and neither the app token nor the user key
+  appeared in any captured log line. One nuance recorded for posterity: with
+  urllib3 at DEBUG (i.e., *not* the app's config), urllib3's request-line log
+  does include the `check_receipt` token query string — `app.py:17` is the
+  control that keeps it out of `logs/debug.log`, as documented in the claims
+  table. Fix placement reviewed: the `isinstance` guard sits in
+  `_request_json` after the parse try/except and before any `.get()`, so it
+  covers all four public methods and also handles JSON `null`/string/number
+  bodies. No new issues introduced by `a6d252d`; `a68e93a` is docs-only.
 
 ## Non-blocking notes (no action required for this PR)
 
@@ -97,7 +110,8 @@ This doc is self-contained; you do not need the original review conversation.
 | Real-API poll (`APP_REAL_API_CHARACTER_ROWS=32`) | Accepted on inspection — not re-run (would spend the author's Buckler session); the change adds only `timeout=` to an otherwise identical call |
 | Step 3+ scope untouched (H3, H5, M1, …) | ✓ confirmed — hardcoded `targetShortId`/season, new-character skip, non-atomic writes all still present, as intended |
 
-## Gates run (2026-06-12, initially on `f98f903`; re-run after `a6d252d`)
+## Gates run (2026-06-12, initially on `f98f903`; re-run after `a6d252d`, and
+again by the reviewer at re-review on `a68e93a` — all results identical)
 
 | Gate | Result |
 |---|---|
