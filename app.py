@@ -14,6 +14,7 @@ def main():
     # Logging setup
     #
     logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger("urllib3").setLevel(logging.INFO)
 
     # Shared Log Formatter
     formatter = logging.Formatter(
@@ -42,12 +43,21 @@ def main():
 
     logger = logging.getLogger(__name__)
 
+    def run_task_safely():
+        try:
+            do_task()
+        except Exception:
+            logger.exception("Scheduled monitor task failed; continuing.")
+
     logger.info("Scheduling task for every %s seconds...", config.polling_interval)
-    schedule.every(config.polling_interval).seconds.do(do_task)
-    schedule.run_all()
+    schedule.every(config.polling_interval).seconds.do(run_task_safely)
+    run_task_safely()
 
     while True:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+        except Exception:
+            logger.exception("Scheduler loop failed; continuing.")
         time.sleep(1)
 
 

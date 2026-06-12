@@ -26,8 +26,8 @@ authoritative work order), `ALERT_DEDUPLICATION_PROPOSAL.md`, and
 
 | Step | Scope (see Unified roadmap for detail) | Status | Commits | Notes |
 |---|---|---|---|---|
-| 1 | H1 + H2: HTTP timeouts everywhere; exception-proof the scheduler loop | todo | — | |
-| 2 | Replace `chump` with direct `requests`-based `PushoverClient` (resolves H4 root cause, L1, L15) | todo | — | |
+| 1 | H1 + H2: HTTP timeouts everywhere; exception-proof the scheduler loop | done | `bc55165` | Buckler request now uses `timeout=(10, 30)`; scheduler runs `do_task` through a guard and keeps looping after unexpected task/scheduler exceptions. |
+| 2 | Replace `chump` with direct `requests`-based `PushoverClient` (resolves H4 root cause, L1, L15) | done | `a7e9ca4` | Direct `requests` client supports send, receipt check, cancel, and cancel-by-tag with timeouts and sanitized never-raise failure logging; `chump` removed from dependencies. |
 | 3 | H5 (new-character handling), H3 (payload + season ID from config), M1 (atomic write + guarded read) | todo | — | |
 | 4 | Test harness: pytest + pytest-cov dev group; untangle config singleton (L3); seed `do_task` tests; M4 (pydantic dep), M5 (dev-deps/metadata) | todo | — | |
 | 5 | Dedup phase 1 per `ALERT_DEDUPLICATION_PROPOSAL.md` §12 (supersedes M2, retires M10) | todo | — | |
@@ -48,7 +48,12 @@ authoritative work order), `ALERT_DEDUPLICATION_PROPOSAL.md`, and
 - **Decisions made in-session:** <small calls not covered by the docs>
 -->
 
-*(no sessions yet)*
+### 2026-06-12 — Session 1: roadmap steps 1–2
+- **Branch / commits:** `codex/roadmap-steps-1-2`; `bc55165` H1/H2: add timeouts and harden scheduler, `a7e9ca4` H4/L1/L15: replace chump with PushoverClient
+- **Done:** H1 Buckler timeout; H2 scheduler guard and never-raise notification send path; H4 root cause removed by dropping `chump`; L1/L15 direct `PushoverClient` added with `send`, `check_receipt`, `cancel`, and `cancel_by_tag`.
+- **Verified by:** `uv run python -m black app.py api_service.py notifier_client.py`; `uv run python -m py_compile app.py api_service.py notifier_client.py task.py`; `uv run python -m mypy app.py api_service.py config.py model.py notifier_client.py task.py utilities.py` (still reports only the known baseline issues: missing `requests` stubs in `api_service.py`/`task.py`, missing `sortedcontainers` stubs, and `notifications_to_send` needing an annotation; no new errors, and the old `chump` import error is gone); short separate app invocation with Pushover sends and state writes disabled returned `APP_REAL_API_CHARACTER_ROWS=32` from the real Buckler API and did not spend Pushover quota; wrong-port `PushoverClient` demo returned `None`/`{}`/`False`/`False`, logged sanitized `ConnectTimeout` failures, and printed `PUSHOVER_FAILURE_DEMO_SURVIVED`; forced scheduler timeout demo logged `Scheduled monitor task failed; continuing.` and then printed `SCHEDULER_SURVIVED_AFTER_FORCED_POLL_FAILURE` on later ticks.
+- **Not done / carried over:** Roadmap step 3+ items intentionally untouched, including H3, H5, M1, incident state, auth-expiry classification, log rotation, absolute paths/data directory, response dump cleanup, and test harness work.
+- **Decisions made in-session:** Pushover request failures log endpoint path plus exception class only, not traceback/exception text, because receipt GET exceptions can include the app token query string.
 
 ## Deviations from the spec docs
 
