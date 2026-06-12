@@ -29,12 +29,12 @@ authoritative work order), `ALERT_DEDUPLICATION_PROPOSAL.md`, and
 | 1 | H1 + H2: HTTP timeouts everywhere; exception-proof the scheduler loop | done | `bc55165` | Buckler request now uses `timeout=(10, 30)`; scheduler runs `do_task` through a guard and keeps looping after unexpected task/scheduler exceptions. |
 | 2 | Replace `chump` with direct `requests`-based `PushoverClient` (resolves H4 root cause, L1, L15) | done | `a7e9ca4` | Direct `requests` client supports send, receipt check, cancel, and cancel-by-tag with timeouts and sanitized never-raise failure logging; `chump` removed from dependencies. |
 | 3 | H5 (new-character handling), H3 (payload + season ID from config), M1 (atomic write + guarded read) | todo | — | |
-| 4 | Test harness: pytest + pytest-cov dev group; untangle config singleton (L3); seed `do_task` tests; M4 (pydantic dep), M5 (dev-deps/metadata) | todo | — | |
-| 5 | Dedup phase 1 per `ALERT_DEDUPLICATION_PROPOSAL.md` §12 (supersedes M2, retires M10) | todo | — | |
+| 4 | Test harness: pytest + pytest-cov dev group; untangle config singleton (L3); seed `do_task` tests; M4 (pydantic dep), M5 (dev-deps/metadata) | todo | — | From PR #1 review: when `types-requests` stubs land, remove the `# type: ignore[import-untyped]` at `notifier_client.py:5`, or it becomes an unused ignore. |
+| 5 | Dedup phase 1 per `ALERT_DEDUPLICATION_PROPOSAL.md` §12 (supersedes M2, retires M10) | todo | — | From PR #1 review: `PushoverClient.send` returns `None` both on failure and on a *successful* non-emergency send (Pushover only returns a receipt for priority 2) — do not use the return value as a success signal for priority < 2 sends. |
 | 6 | M3 (auth-expiry incident), M6 (Accept-Encoding), M7 (log rotation), M8 (absolute paths + `data/` move per addendum), M9 cleanup + `.gitignore` | todo | — | |
 | 7 | Dedup phase 2: Master-color swap incident, quota self-alert, sounds/url polish, README DND note | todo | — | |
 | 8 | Status page per `STATUS_PAGE_PROPOSAL.md` | todo | — | |
-| 9 | Remaining L items (opportunistic); Glances stays shelved | todo | — | |
+| 9 | Remaining L items (opportunistic); Glances stays shelved | todo | — | From PR #1 review: `REQUEST_TIMEOUT = (10, 30)` is duplicated in `api_service.py:12` and `notifier_client.py:12`; consolidate if a shared constants home appears. |
 
 ## Session log
 
