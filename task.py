@@ -10,7 +10,7 @@ from sortedcontainers import SortedDict
 from api_service import get_character_win_rates
 from config import config
 from notifier_client import send_message
-from utilities import get_duration_since_file_modified
+from utilities import get_duration_since_file_modified, truncated_database
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,9 @@ def write_to_database(data):
     with open(DATABASE_FILENAME, "w") as file:
         json_string = json.dumps(data, indent=2)
         file.write(json_string)
+
+    # sort_database_by_value(DATABASE_FILENAME)
+    truncated_database(DATABASE_FILENAME)
     return
 
 

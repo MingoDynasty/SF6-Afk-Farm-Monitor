@@ -10,8 +10,10 @@ logger = logging.getLogger(__name__)
 
 url = "https://www.streetfighter.com/6/buckler/api/profile/play/act/characterwinrate"
 
+# TODO: target season ID needs to be updated to the current season.
+#  Maybe move to config file?
 payload = json.dumps(
-    {"targetShortId": 2885430127, "targetSeasonId": 10, "targetModeId": 2, "lang": "en"}
+    {"targetShortId": 2885430127, "targetSeasonId": 12, "targetModeId": 2, "lang": "en"}
 )
 
 headers = {
@@ -38,4 +40,10 @@ def get_character_win_rates(user_code) -> WinRateResponse:
     response = requests.request("POST", url, headers=headers, data=payload)
     response.raise_for_status()
     response_json = response.json()["response"]
+
+    # TODO: debugging only
+    with open("response.json", "w") as file:
+        json_string = json.dumps(response_json, indent=2)
+        file.write(json_string)
+
     return WinRateResponse.model_validate(response_json)
