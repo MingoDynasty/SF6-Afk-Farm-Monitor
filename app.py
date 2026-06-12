@@ -14,6 +14,7 @@ def main():
     # Logging setup
     #
     logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger("urllib3").setLevel(logging.INFO)
 
     # Shared Log Formatter
     formatter = logging.Formatter(

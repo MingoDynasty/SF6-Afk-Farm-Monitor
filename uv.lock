@@ -77,15 +77,6 @@ wheels = [
 ]
 
 [[package]]
-name = "chump"
-version = "1.6.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f3/2d/5d049a2a8a5f895a50c8cfe27fbc2ff76f17f975df53e342ac682e65af4d/chump-1.6.0.tar.gz", hash = "sha256:f4659f39849c69e32e939b97bec53550f1e30055fdbd81d52b6564d1153255ee", size = 15646, upload-time = "2018-11-04T19:37:59.714Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6f/02/c1e2d20069b742eeb387739d4e84e1cf95064a27bcf4074fd238473955b3/chump-1.6.0-py3-none-any.whl", hash = "sha256:5f5b50b9f855b2d6473e291013f0ae8f42f02180b980d337b3b2c274f985e1f7", size = 10866, upload-time = "2018-11-04T19:37:58.486Z" },
-]
-
-[[package]]
 name = "click"
 version = "8.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -261,7 +252,6 @@ name = "my-python-project"
 version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "chump" },
     { name = "datamodel-code-generator" },
     { name = "humanize" },
     { name = "mypy" },
@@ -272,7 +262,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "chump", specifier = ">=1.6.0" },
     { name = "datamodel-code-generator", specifier = ">=0.53.0" },
     { name = "humanize", specifier = ">=4.15.0" },
     { name = "mypy", specifier = ">=1.11" },
