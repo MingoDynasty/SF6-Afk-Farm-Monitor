@@ -133,6 +133,15 @@ class PushoverClient:
             )
             return None
 
+        if not isinstance(response_json, dict):
+            logger.error(
+                "Pushover %s request for %s returned non-object JSON: HTTP %s",
+                method,
+                path,
+                response.status_code,
+            )
+            return None
+
         if response.status_code != 200 or response_json.get("status") != 1:
             logger.error(
                 "Pushover %s request for %s failed: HTTP %s status=%s errors=%s request=%s",
