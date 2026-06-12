@@ -116,7 +116,7 @@ Implication for this design: `priority=2` governs *redelivery persistence* (Push
 
 ## 6. State, persistence, and crash recovery
 
-A small `notification_state.json` (separate file — keep `database.json` purely "observed counts"):
+A small `notification_state.json` (separate file — keep `database.json` purely "observed counts"; lives in the `data/` directory per the review's M8 addendum, decided 2026-06-12):
 
 ```json
 {

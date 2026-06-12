@@ -145,6 +145,8 @@ Two `FileHandler`s with no rotation, on a process designed to run 24/7. `debug.l
 
 **Fix:** anchor paths to the script location, e.g. `BASE_DIR = Path(__file__).resolve().parent`.
 
+**Addendum (decided 2026-06-12):** as part of the same change, move the state/artifact files out of the repo root into a `data/` directory (`DATA_DIR = BASE_DIR / "data"`, created with `mkdir(exist_ok=True)` like `logs/` is today): `database.json`, `shortened.json` (while it still exists — see open question 2), and the dedup proposal's `notification_state.json`. `response.json` is being deleted per M9; logs stay in `logs/`; `config.toml` stays in the root (it's user-edited, not app-generated). `.gitignore` then needs just `data/` instead of per-file entries. Migration: a one-time manual move of the existing `database.json` (or simply let the app re-baseline on first run — harmless; it just resets the stuck timer once). No auto-migration code — not worth it for a single deployment.
+
 ### M9. Uncommitted regression: per-poll `response.json` debug dump re-added
 `api_service.py:44-47` (working tree only; contradicts commit `490bd16` which removed exactly this)
 
@@ -215,7 +217,7 @@ The review fixes and `ALERT_DEDUPLICATION_PROPOSAL.md` are **not** sequential bo
 3. **H5** (new-character handling), **H3** (payload + season ID from config), **M1** (atomic write + guarded read) — small, independent correctness fixes.
 4. **Test harness** (open-questions item 6): pytest + dev dependency group + config-singleton untangling (L3), seeded with tests for the `do_task` logic — landed alongside step 3 so the fixes arrive tested. Also fold in the trivial dependency fixes here (M4 pydantic, M5 dev-deps/metadata).
 5. **Dedup phase 1** per `ALERT_DEDUPLICATION_PROPOSAL.md` §12 — **supersedes M2** (do not implement rate-limiting separately) and **retires M10** (`last_change_at` replaces the mtime check).
-6. **Remaining M items:** M3 (auth-expiry detection — becomes an incident type, so it slots naturally after phase 1), M6 (Accept-Encoding), M7 (log rotation), M8 (absolute paths), M9 cleanup + `.gitignore` additions.
+6. **Remaining M items:** M3 (auth-expiry detection — becomes an incident type, so it slots naturally after phase 1), M6 (Accept-Encoding), M7 (log rotation), M8 (absolute paths **+ the `data/` directory move**, see M8 addendum), M9 cleanup + `.gitignore` additions.
 7. **Dedup phase 2** (Master-color swap incident, quota self-alert, sounds/url polish, README DND note).
 8. **Status page** per `STATUS_PAGE_PROPOSAL.md` (depends on M1's atomic writes and phase 1's `notification_state.json`).
 9. Remaining L items opportunistically; Glances stays shelved (`GLANCES_PROPOSAL.md`).

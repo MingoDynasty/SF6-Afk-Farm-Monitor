@@ -32,10 +32,12 @@ Real-time push is the wrong tool here, for the same simplicity-first reason the 
 ## 3. Architecture: separate process, reads the same files
 
 ```
-app.py (monitor)  ──writes──►  database.json / notification_state.json
+app.py (monitor)  ──writes──►  data/database.json / data/notification_state.json
                                        ▲
 status_server.py  ──reads─────────────┘   (serves HTML + /api/status)
 ```
+
+(The `data/` directory is the review's M8 addendum, decided 2026-06-12.)
 
 - **Separate process, not a thread in the monitor.** The entire codebase review is about the monitor's reliability; a web server living inside it is a new way to destabilize it. As a separate script that only *reads* the JSON files, the status page can crash, hang, or be absent with zero effect on monitoring. It also needs no access to config secrets — character counts only.
 - **Stack: Python stdlib `http.server.ThreadingHTTPServer`** — roughly 60–80 lines including the embedded HTML, zero new dependencies. Flask would be marginally nicer but buys nothing at two endpoints; can revisit if the page grows features. Reads the JSON files per-request (they're under 1 KB; no caching needed).
