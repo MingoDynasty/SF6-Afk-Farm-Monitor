@@ -80,3 +80,27 @@ Example running output:
 
 Example Pushover notification:
 ![pushover_example_notification.png](docs/pushover_example_notification.png)
+
+## Status page
+
+An optional local web page shows live farm progress at a glance: a per-character table with 0–100 progress bars
+(unfinished characters first), the finished-character tally, how long it has been since the last battle-count change,
+and the current health (OK / stuck / API down / auth expired). It is a **separate, read-only process** from the
+monitor — it only reads `data/database.json` and `data/notification_state.json`, so it never affects monitoring and can
+be started or stopped independently of `app.py`.
+
+Start it in its own terminal:
+
+```shell
+uv run python status_server.py
+```
+
+Then open `http://localhost:8675` on the PC, or `http://<pc-ip>:8675` from a phone on the same Wi-Fi. The page
+re-fetches every 30 seconds; `GET /api/status` returns the same data as JSON.
+
+- The port is the `status_page_port` config key (default `8675`; omit it to use the default). Avoid `8080` if Steam is
+  running, as it occupies that port.
+- The server binds `0.0.0.0` for LAN access, so the **first** time you reach it from another device Windows will show a
+  Firewall prompt — allow it on **Private** networks.
+- There is no authentication; it is intended for your LAN only. Do not port-forward or otherwise expose it to the
+  internet (it serves only character battle counts, never your `config.toml`).
