@@ -1,4 +1,4 @@
-import logging.config
+import logging
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -12,7 +12,7 @@ from paths import DATA_DIR, LOGS_DIR
 from task import do_task
 
 
-def main():
+def main() -> None:
     config = load_config()
 
     #
@@ -65,7 +65,7 @@ def main():
     incident_manager = IncidentManager(pushover_client, config)
     incident_manager.reconcile_on_startup()
 
-    def run_task_safely():
+    def run_task_safely() -> None:
         try:
             do_task(config, incident_manager)
         except Exception:

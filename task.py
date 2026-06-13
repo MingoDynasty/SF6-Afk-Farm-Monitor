@@ -1,5 +1,5 @@
 import json
-import logging.config
+import logging
 import os
 from collections.abc import Mapping
 from datetime import timedelta
@@ -7,17 +7,27 @@ from pathlib import Path
 
 import humanize
 from requests import HTTPError
-from sortedcontainers import SortedDict  # type: ignore[import-untyped]
 
 from api_service import AuthExpiredError, get_character_win_rates
 from config import ConfigData
 from incident_manager import IncidentManager
 from paths import DATA_DIR
-from utilities import truncated_database
 
 logger = logging.getLogger(__name__)
 
 DATABASE_FILENAME = DATA_DIR / "database.json"
+
+# A character's Master color reward completes at 100 battles; crossing this
+# threshold is what opens a swap_needed incident. The status page uses the same
+# number for its finished/progress display (status_server.FINISHED_THRESHOLD).
+MASTER_COLOR_THRESHOLD = 100
+
+# "Any" is the Buckler "all characters" aggregate row, not a real character, so
+# it must be filtered out of the per-character logic: its total is always large,
+# so left in it reads as a permanently-finished character that would prematurely
+# close swap incidents and open bogus ones. ("Random" is inert at ~0 and stays
+# in database.json; it is filtered only by the status-page view, by decision.)
+AGGREGATE_CHARACTER = "Any"
 
 AUTH_EXPIRED_MESSAGE = (
     "Buckler session expired — refresh buckler_id / buckler_r_id / "
@@ -31,14 +41,13 @@ def write_to_database(
     database_path = Path(database_filename)
     temporary_database_path = database_path.with_name(f"{database_path.name}.tmp")
     with temporary_database_path.open("w", encoding="utf-8") as file:
-        json_string = json.dumps(data, indent=2)
+        # sort_keys keeps the on-disk file alphabetical (previously achieved by
+        # building a SortedDict; review finding L8 dropped that dependency).
+        json_string = json.dumps(data, indent=2, sort_keys=True)
         file.write(json_string)
         file.write("\n")
 
     os.replace(temporary_database_path, database_path)
-
-    # sort_database_by_value(database_path)
-    truncated_database(database_path)
 
 
 def read_database(database_filename: str | Path) -> dict[str, int] | None:
@@ -109,9 +118,9 @@ def do_task(
         active=False, build_message=lambda: AUTH_EXPIRED_MESSAGE
     )
 
-    current_character_to_battle_count: SortedDict[str, int] = SortedDict()
+    current_character_to_battle_count: dict[str, int] = {}
     for character_win_rate in win_rate_response.character_win_rates:
-        if character_win_rate.character_name == "Any":
+        if character_win_rate.character_name == AGGREGATE_CHARACTER:
             continue
         current_character_to_battle_count[character_win_rate.character_name] = (
             character_win_rate.battle_count
@@ -151,7 +160,7 @@ def do_task(
         )
         if current_battle_count > previous_battle_count:
             increased_characters.append(character)
-            if previous_battle_count < 100 <= current_battle_count:
+            if previous_battle_count < MASTER_COLOR_THRESHOLD <= current_battle_count:
                 logger.info("Finished Master color reward for character: %s", character)
                 crossed_threshold.append(character)
 

@@ -496,3 +496,20 @@ def test_write_to_database_uses_atomic_replace(
     assert replace_calls == [(temporary_database_path, database_path)]
     assert not temporary_database_path.exists()
     assert read_database(database_path) == {"Ryu": 1}
+
+
+def test_write_to_database_sorts_keys_alphabetically(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The on-disk file used to be alphabetical because it was built from a
+    # SortedDict; after L8 dropped sortedcontainers, json.dumps(sort_keys=True)
+    # must preserve that ordering. Insertion order here is deliberately not
+    # alphabetical so the assertion proves sorting, not luck.
+    monkeypatch.chdir(tmp_path)
+    database_path = tmp_path / "database.json"
+
+    task.write_to_database({"Ryu": 1, "Akuma": 2, "Cammy": 3}, database_path)
+
+    # json.loads preserves the file's key order, so this reflects on-disk order.
+    written = json.loads(database_path.read_text(encoding="utf-8"))
+    assert list(written.keys()) == ["Akuma", "Cammy", "Ryu"]
