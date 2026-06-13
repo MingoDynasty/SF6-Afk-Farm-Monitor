@@ -12,7 +12,6 @@ from api_service import AuthExpiredError, get_character_win_rates
 from config import ConfigData
 from incident_manager import IncidentManager
 from paths import DATA_DIR
-from utilities import truncated_database
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +36,6 @@ def write_to_database(
         file.write("\n")
 
     os.replace(temporary_database_path, database_path)
-
-    # sort_database_by_value(database_path)
-    truncated_database(database_path)
 
 
 def read_database(database_filename: str | Path) -> dict[str, int] | None:
