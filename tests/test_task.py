@@ -1,6 +1,6 @@
 import json
 import os
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -15,17 +15,13 @@ from incident_manager import (
     API_DOWN,
     AUTH_EXPIRED,
     AUTH_EXPIRED_TAG,
+    LOW_QUOTA,
     STUCK_FARM,
+    SWAP_NEEDED,
+    SWAP_NEEDED_TAG,
     IncidentManager,
 )
 from model import CharacterWinRate, WinRateResponse
-
-
-@pytest.fixture(autouse=True)
-def clear_notification_queue() -> Generator[None]:
-    task.notifications_to_send.clear()
-    yield
-    task.notifications_to_send.clear()
 
 
 def make_response(character_counts: dict[str, int]) -> WinRateResponse:
@@ -61,16 +57,11 @@ def run_task_with_response(
     incident_manager: IncidentManager,
     database_path: Path,
     win_rate_response: WinRateResponse,
-    sent_messages: list[str],
 ) -> None:
     def fake_get_character_win_rates(config: ConfigData) -> WinRateResponse:
         return win_rate_response
 
-    def fake_send_message(message: str, config: ConfigData) -> None:
-        sent_messages.append(message)
-
     monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
-    monkeypatch.setattr(task, "send_message", fake_send_message)
 
     task.do_task(config_data, incident_manager, database_path)
 
@@ -97,7 +88,6 @@ def test_new_character_counts_as_difference_and_is_persisted(
     manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
     database_path = tmp_path / "database.json"
     write_database(database_path, {"Ryu": 10})
-    sent_messages: list[str] = []
 
     run_task_with_response(
         monkeypatch,
@@ -105,15 +95,13 @@ def test_new_character_counts_as_difference_and_is_persisted(
         manager,
         database_path,
         make_response({"Ryu": 10, "Akuma": 1}),
-        sent_messages,
     )
 
     assert read_database(database_path) == {"Akuma": 1, "Ryu": 10}
-    assert sent_messages == []
     assert fake_client.sent == []
 
 
-def test_threshold_crossing_sends_master_color_notification(
+def test_threshold_crossing_opens_swap_needed_incident(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     fake_client: FakePushoverClient,
@@ -125,7 +113,6 @@ def test_threshold_crossing_sends_master_color_notification(
     manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
     database_path = tmp_path / "database.json"
     write_database(database_path, {"Juri": 99})
-    sent_messages: list[str] = []
 
     run_task_with_response(
         monkeypatch,
@@ -133,14 +120,92 @@ def test_threshold_crossing_sends_master_color_notification(
         manager,
         database_path,
         make_response({"Juri": 100}),
-        sent_messages,
     )
 
     assert read_database(database_path) == {"Juri": 100}
-    assert sent_messages == ["Finished Master color reward for character: Juri"]
-    # Master-color messages still go through send_message, not the incident
-    # manager (conversion is phase 2).
-    assert fake_client.sent == []
+    # The 99 -> 100 crossing now opens a swap_needed emergency incident
+    # (replaces the ffb650b per-match re-fire).
+    assert SWAP_NEEDED in manager.incidents
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0]["priority"] == 2
+    assert fake_client.sent[0]["tags"] == SWAP_NEEDED_TAG
+    assert "Juri" in fake_client.sent[0]["message"]
+
+
+def test_swap_needed_stays_open_and_silent_while_same_character_gains(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Juri": 99})
+
+    # Crossing opens the incident.
+    run_task_with_response(
+        monkeypatch, config_data, manager, database_path, make_response({"Juri": 100})
+    )
+    receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+    fake_client.receipt_info[receipt] = {"acknowledged": 0}
+
+    # Continued matches on the *same* finished character: OPEN and silent.
+    for count in (101, 102, 103):
+        fake_clock.advance(60)
+        run_task_with_response(
+            monkeypatch,
+            config_data,
+            manager,
+            database_path,
+            make_response({"Juri": count}),
+        )
+
+    assert SWAP_NEEDED in manager.incidents
+    assert len(fake_client.sent) == 1
+
+
+def test_swap_needed_closes_when_different_character_increases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Juri": 99, "Cammy": 5})
+
+    # Juri crosses 100 -> incident opens (finished character = Juri).
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 5}),
+    )
+    receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+    assert SWAP_NEEDED in manager.incidents
+
+    # The user swaps: a *different* character (Cammy) starts gaining -> CLOSED,
+    # receipt cancelled. (Juri also still gaining the same poll must not block
+    # the close.)
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 101, "Cammy": 6}),
+    )
+
+    assert SWAP_NEEDED not in manager.incidents
+    assert fake_client.cancelled == [receipt]
 
 
 def test_stuck_detection_opens_emergency_incident(
@@ -158,7 +223,6 @@ def test_stuck_detection_opens_emergency_incident(
 
     # No count change, and last_change_at is now older than the timeout.
     fake_clock.advance(120)
-    sent_messages: list[str] = []
 
     run_task_with_response(
         monkeypatch,
@@ -166,12 +230,10 @@ def test_stuck_detection_opens_emergency_incident(
         manager,
         database_path,
         make_response({"Manon": 42}),
-        sent_messages,
     )
 
     assert read_database(database_path) == {"Manon": 42}
-    # Stuck farm is an emergency incident now, not a plain send_message.
-    assert sent_messages == []
+    # Stuck farm is an emergency incident.
     assert len(fake_client.sent) == 1
     assert fake_client.sent[0]["priority"] == 2
     assert "afk farm might be stuck" in fake_client.sent[0]["message"]
@@ -194,7 +256,6 @@ def test_count_change_resets_stuck_timer(
     # Plenty of elapsed time, but the count changes this poll, so the timer
     # resets and no stuck incident opens.
     fake_clock.advance(120)
-    sent_messages: list[str] = []
 
     run_task_with_response(
         monkeypatch,
@@ -202,7 +263,6 @@ def test_count_change_resets_stuck_timer(
         manager,
         database_path,
         make_response({"Manon": 43}),
-        sent_messages,
     )
 
     assert read_database(database_path) == {"Manon": 43}
@@ -222,7 +282,6 @@ def test_corrupt_database_is_replaced_from_current_response(
     manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
     database_path = tmp_path / "database.json"
     database_path.write_text("{", encoding="utf-8")
-    sent_messages: list[str] = []
 
     run_task_with_response(
         monkeypatch,
@@ -230,11 +289,9 @@ def test_corrupt_database_is_replaced_from_current_response(
         manager,
         database_path,
         make_response({"Chun-Li": 7}),
-        sent_messages,
     )
 
     assert read_database(database_path) == {"Chun-Li": 7}
-    assert sent_messages == []
     assert fake_client.sent == []
 
 
@@ -338,7 +395,6 @@ def test_successful_poll_closes_open_auth_expired_incident(
     # An auth_expired incident is already open from a previous failed poll.
     manager.evaluate_auth_expired(active=True, build_message=lambda: "refresh cookies")
     receipt = manager.incidents[AUTH_EXPIRED]["receipt"]
-    sent_messages: list[str] = []
 
     run_task_with_response(
         monkeypatch,
@@ -346,12 +402,78 @@ def test_successful_poll_closes_open_auth_expired_incident(
         manager,
         database_path,
         make_response({"Ryu": 1}),
-        sent_messages,
     )
 
     # First successful poll closes the incident and cancels the receipt.
     assert AUTH_EXPIRED not in manager.incidents
     assert fake_client.cancelled == [receipt]
+
+
+def test_swap_needed_reopens_for_character_crossing_while_closing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    # Both characters sit one match from Master color.
+    write_database(database_path, {"Juri": 99, "Cammy": 99})
+
+    # Juri 99 -> 100 opens the swap incident (finished character = Juri).
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 99}),
+    )
+    juri_receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # Next poll: the user has swapped onto Cammy, who crosses 100 the same poll
+    # that closes Juri's incident. The crossing must not be lost.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 100}),
+    )
+
+    assert SWAP_NEEDED in manager.incidents
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert fake_client.cancelled == [juri_receipt]
+
+
+def test_do_task_opens_low_quota_incident_when_remaining_below_floor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Ryu": 1})
+
+    # A prior Pushover call this session reported a low remaining count.
+    fake_client.last_remaining = 400
+
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Ryu": 1}),
+    )
+
+    assert LOW_QUOTA in manager.incidents
 
 
 def test_write_to_database_uses_atomic_replace(

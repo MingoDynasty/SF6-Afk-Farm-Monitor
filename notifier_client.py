@@ -4,8 +4,6 @@ from urllib.parse import quote
 
 import requests
 
-from config import ConfigData
-
 logger = logging.getLogger(__name__)
 
 PUSHOVER_API_BASE_URL = "https://api.pushover.net/1"
@@ -26,6 +24,10 @@ class PushoverClient:
         self.user_key = user_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Most recent X-Limit-App-Remaining seen on any response, so the
+        # IncidentManager can open a low-quota incident before sends start
+        # failing (ALERT_DEDUPLICATION_PROPOSAL.md §9.2). None until first call.
+        self.last_remaining: int | None = None
 
     def send(
         self,
@@ -37,6 +39,7 @@ class PushoverClient:
         sound: str | None = None,
         url: str | None = None,
         url_title: str | None = None,
+        timestamp: int | None = None,
     ) -> str | None:
         payload: JsonDict = {
             "token": self.app_key,
@@ -51,6 +54,7 @@ class PushoverClient:
             "sound": sound,
             "url": url,
             "url_title": url_title,
+            "timestamp": timestamp,
         }
         payload.update(
             {key: value for key, value in optional_fields.items() if value is not None}
@@ -124,6 +128,10 @@ class PushoverClient:
 
         remaining = response.headers.get("X-Limit-App-Remaining")
         if remaining is not None:
+            try:
+                self.last_remaining = int(remaining)
+            except ValueError:
+                pass
             logger.info(
                 "Pushover monthly quota: %s messages remaining.",
                 remaining,
@@ -162,10 +170,3 @@ class PushoverClient:
             return None
 
         return response_json
-
-
-def send_message(message: str, config: ConfigData) -> None:
-    if not config.pushover_enabled:
-        return
-    pushover_client = PushoverClient(config.pushover_app_key, config.pushover_user_key)
-    pushover_client.send(message)

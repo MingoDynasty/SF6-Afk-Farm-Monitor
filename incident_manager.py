@@ -30,8 +30,16 @@ NOTIFICATION_STATE_FILENAME = DATA_DIR / "notification_state.json"
 STUCK_FARM = "stuck_farm"
 API_DOWN = "api_down"
 AUTH_EXPIRED = "auth_expired"
+SWAP_NEEDED = "swap_needed"
+LOW_QUOTA = "low_quota"
+
+# Open a one-shot low-quota incident when fewer than this many Pushover messages
+# remain in the monthly allowance, so quota exhaustion never silently mutes real
+# alerts (§9.2). Closes when the count rises back above the floor (monthly reset).
+QUOTA_FLOOR = 500
 STUCK_FARM_TAG = "sf6mon-stuck_farm"
 AUTH_EXPIRED_TAG = "sf6mon-auth_expired"
+SWAP_NEEDED_TAG = "sf6mon-swap_needed"
 
 # Emergency incident types share one state machine (open / maintain / re-raise /
 # re-arm / close on observed recovery); each carries its own Pushover tag so
@@ -39,7 +47,23 @@ AUTH_EXPIRED_TAG = "sf6mon-auth_expired"
 EMERGENCY_TAGS = {
     STUCK_FARM: STUCK_FARM_TAG,
     AUTH_EXPIRED: AUTH_EXPIRED_TAG,
+    SWAP_NEEDED: SWAP_NEEDED_TAG,
 }
+
+# Distinct built-in Pushover sound per incident type so alerts are
+# distinguishable from the lock screen without reading them (§9.1).
+INCIDENT_SOUNDS = {
+    STUCK_FARM: "siren",
+    SWAP_NEEDED: "magic",
+    AUTH_EXPIRED: "falling",
+    API_DOWN: "falling",
+}
+
+# Incident types that deep-link to the monitored profile's play page (§9.3):
+# one tap from the notification to verification. Only the two actionable
+# farm-progress alerts carry it; auth/api/quota alerts are not page-specific.
+PROFILE_LINK_KINDS = frozenset({STUCK_FARM, SWAP_NEEDED})
+PROFILE_LINK_TITLE = "Open Buckler profile"
 
 
 class IncidentManager:
@@ -182,6 +206,54 @@ class IncidentManager:
         # active flag (review finding M3).
         self._evaluate_emergency(AUTH_EXPIRED, AUTH_EXPIRED_TAG, active, build_message)
 
+    def evaluate_swap_needed(
+        self,
+        increased_characters: list[str],
+        crossed_characters: list[str],
+        build_message: Callable[[str], str],
+    ) -> None:
+        # Master-color swap incident (§7), replacing the per-match re-fire from
+        # commit ffb650b. Emergency policy identical to stuck_farm; the only
+        # differences are the open and close signals:
+        #   open  = a character's count crosses 100 this poll
+        #   close = a *different* character's count starts increasing (the user
+        #           actually swapped). Continued matches on the finished
+        #           character keep the incident OPEN and silent (modulo re-arm).
+        incident = self.incidents.get(SWAP_NEEDED)
+        if incident is not None:
+            # Always present: set via ``extra`` when the swap incident is opened.
+            finished = incident["character"]
+            if not any(character != finished for character in increased_characters):
+                # The finished character is still gaining (or the poll is flat):
+                # stay OPEN and silent, modulo re-raise/re-arm.
+                self._maintain_emergency(
+                    SWAP_NEEDED,
+                    SWAP_NEEDED_TAG,
+                    incident,
+                    lambda: build_message(finished),
+                )
+                return
+            # A different character started gaining: the swap happened. Close
+            # this incident, then fall through to the open check — if that same
+            # poll *also* crossed 100 on another character (e.g. the user swapped
+            # onto a character already sitting at 99), its incident must open
+            # now. The crossing is an edge that is gone after this poll's
+            # database write, so it cannot be recovered on a later poll.
+            self._close_emergency(SWAP_NEEDED, incident)
+
+        if crossed_characters:
+            finished = crossed_characters[0]
+            self._open_emergency(
+                SWAP_NEEDED,
+                SWAP_NEEDED_TAG,
+                lambda: build_message(finished),
+                extra={"character": finished},
+                # The 100-crossing is an edge: if the open send fails it cannot
+                # be retried next poll, so record a receipt-less incident and let
+                # _maintain_emergency page on the next poll (P1).
+                record_on_send_failure=True,
+            )
+
     def _evaluate_emergency(
         self, kind: str, tag: str, active: bool, build_message: Callable[[], str]
     ) -> None:
@@ -194,31 +266,64 @@ class IncidentManager:
         elif incident is not None:
             self._close_emergency(kind, incident)
 
-    def _send_emergency(self, message: str, tag: str) -> str | None:
+    def _profile_url(self) -> str:
+        return (
+            "https://www.streetfighter.com/6/buckler/profile/"
+            f"{self.config.user_code}/play"
+        )
+
+    def _send_emergency(self, kind: str, message: str, tag: str) -> str | None:
+        url = self._profile_url() if kind in PROFILE_LINK_KINDS else None
+        url_title = PROFILE_LINK_TITLE if url else None
         return self.client.send(
             message,
             priority=2,
             retry=self.config.emergency_retry,
             expire=self.config.emergency_expire,
             tags=tag,
+            sound=INCIDENT_SOUNDS.get(kind),
+            url=url,
+            url_title=url_title,
+            timestamp=int(self.clock()),
         )
 
     def _open_emergency(
-        self, kind: str, tag: str, build_message: Callable[[], str]
+        self,
+        kind: str,
+        tag: str,
+        build_message: Callable[[], str],
+        extra: dict[str, Any] | None = None,
+        record_on_send_failure: bool = False,
     ) -> None:
         message = build_message()
         receipt: str | None = None
         if self.enabled:
-            receipt = self._send_emergency(message, tag)
-            if receipt is None:
+            receipt = self._send_emergency(kind, message, tag)
+            if receipt is None and not record_on_send_failure:
+                # Level-triggered incidents (stuck_farm, auth_expired) recover a
+                # failed open for free: the condition is still active next poll,
+                # so the open is simply retried. Record nothing now.
                 logger.error("%s emergency send failed; will retry next poll.", kind)
                 return
-        self.incidents[kind] = {
+            if receipt is None:
+                # Edge-triggered incidents (swap_needed) have no next-poll edge
+                # to retry on — the crossing is gone once do_task writes the new
+                # count — so record a receipt-less incident. _maintain_emergency
+                # sends the first real alert on the next poll instead (P1).
+                logger.error(
+                    "%s emergency send failed; recorded without a receipt, "
+                    "will send on the next poll.",
+                    kind,
+                )
+        incident: dict[str, Any] = {
             "receipt": receipt,
             "opened_at": self.clock(),
             "expire": self.config.emergency_expire,
             "acked_at": 0,
         }
+        if extra:
+            incident.update(extra)
+        self.incidents[kind] = incident
         logger.warning("%s incident OPENED: %s", kind, message)
         self._save()
 
@@ -236,16 +341,17 @@ class IncidentManager:
             logger.debug("%s still active; Pushover disabled, staying silent.", kind)
             return
         if incident.get("receipt") is None:
-            # The incident was opened while Pushover was disabled (an enabled
-            # open with a failed send is never recorded), so it never paged
-            # anyone. Pushover is enabled now and the condition is still active:
-            # send the first real emergency alert and attach a receipt (P2).
+            # A receipt-less incident never paged anyone — it was opened either
+            # while Pushover was disabled (now re-enabled, P2) or, for the
+            # edge-triggered swap_needed, after a failed open send that was
+            # recorded anyway (P1). Pushover is enabled and the condition still
+            # holds, so send the first real emergency alert and attach a receipt.
             self._reraise_emergency(
                 kind,
                 tag,
                 incident,
                 build_message,
-                "first alert after Pushover re-enabled",
+                "first alert for a receipt-less incident",
             )
             return
 
@@ -291,7 +397,7 @@ class IncidentManager:
         build_message: Callable[[], str],
         reason: str,
     ) -> None:
-        receipt = self._send_emergency(build_message(), tag)
+        receipt = self._send_emergency(kind, build_message(), tag)
         if receipt is None:
             logger.error("%s %s send failed; will retry next poll.", kind, reason)
             return
@@ -333,7 +439,12 @@ class IncidentManager:
         if self.enabled:
             # priority=1 returns no receipt, so the return value is not a
             # success signal; this is a best-effort one-shot send.
-            self.client.send(down_message, priority=1)
+            self.client.send(
+                down_message,
+                priority=1,
+                sound=INCIDENT_SOUNDS.get(API_DOWN),
+                timestamp=int(self.clock()),
+            )
         self.incidents[API_DOWN] = {"opened_at": self.clock()}
         logger.warning("api_down incident OPENED: %s", down_message)
         self._save()
@@ -343,7 +454,49 @@ class IncidentManager:
         outage = timedelta(seconds=now - (incident.get("opened_at") or now))
         message = f"Capcom Buckler API recovered after {humanize.precisedelta(outage)}."
         if self.enabled:
-            self.client.send(message, priority=0)
+            self.client.send(message, priority=0, timestamp=int(now))
         del self.incidents[API_DOWN]
         logger.info("api_down incident CLOSED (recovery observed): %s", message)
+        self._save()
+
+    # -- low_quota incident (one-shot, high priority) -----------------------
+
+    def evaluate_low_quota(self) -> None:
+        """Open a one-shot alert when the Pushover monthly quota runs low (§9.2).
+
+        Reads the latest ``X-Limit-App-Remaining`` the client captured on any
+        send/receipt/cancel this poll. ``None`` means no Pushover call has been
+        made yet (e.g. a healthy poll that sent nothing, or Pushover disabled),
+        so there is no quota information to act on.
+        """
+        remaining = self.client.last_remaining
+        if remaining is None:
+            return
+        incident = self.incidents.get(LOW_QUOTA)
+        if remaining < QUOTA_FLOOR:
+            if incident is None:
+                self._open_low_quota(remaining)
+            # Already OPEN: one-shot, send nothing more.
+        elif incident is not None:
+            self._close_low_quota(remaining)
+
+    def _open_low_quota(self, remaining: int) -> None:
+        message = (
+            f"Pushover quota low: only {remaining} messages left this month. "
+            "Real alerts will be dropped once it hits zero."
+        )
+        if self.enabled:
+            # priority=1 returns no receipt; best-effort one-shot send.
+            self.client.send(message, priority=1, timestamp=int(self.clock()))
+        self.incidents[LOW_QUOTA] = {"opened_at": self.clock()}
+        logger.warning("low_quota incident OPENED: %s", message)
+        self._save()
+
+    def _close_low_quota(self, remaining: int) -> None:
+        # Recovery (monthly reset) is silent: announcing it would itself spend a
+        # message, and there is nothing for the user to act on.
+        del self.incidents[LOW_QUOTA]
+        logger.info(
+            "low_quota incident CLOSED: quota recovered to %s messages.", remaining
+        )
         self._save()

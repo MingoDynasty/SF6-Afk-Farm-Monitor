@@ -36,9 +36,17 @@ your phone, and the app sends exactly one alert per incident instead of one per 
 Acknowledging an alert only silences Pushover's re-delivery — the incident closes (and any remaining nagging is
 cancelled) only when the app observes the farm recover (a battle count increments again).
 
-> **Deployment note:** emergency priority does *not* bypass your phone's OS-level Do Not Disturb by default. To let a
-> stuck-farm alert wake you overnight, enable **Critical Alerts** for Pushover on iOS, or allow Pushover's alarm sound
-> and DND override on Android.
+### Master-color swap alerts (emergency priority)
+
+When a character's battle count crosses 100 (Master color complete), the app opens an emergency incident telling you to
+swap characters. It nags until a *different* character starts gaining battles — i.e. you actually swapped — so you get
+one alert per swap instead of one notification per match played past 100. Continued matches on the finished character
+keep the incident open and silent. It shares the same `emergency_retry` / `emergency_expire` / `re_alert_after_ack`
+tuning as stuck-farm alerts, and the notification deep-links straight to your Buckler profile.
+
+> **Deployment note:** emergency priority does *not* bypass your phone's OS-level Do Not Disturb by default. To let an
+> emergency alert (stuck-farm or Master-color swap) wake you overnight, enable **Critical Alerts** for Pushover on iOS,
+> or allow Pushover's alarm sound and DND override on Android.
 
 ## Getting Buckler Variables
 

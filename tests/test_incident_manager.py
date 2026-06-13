@@ -11,8 +11,12 @@ from incident_manager import (
     API_DOWN,
     AUTH_EXPIRED,
     AUTH_EXPIRED_TAG,
+    LOW_QUOTA,
+    QUOTA_FLOOR,
     STUCK_FARM,
     STUCK_FARM_TAG,
+    SWAP_NEEDED,
+    SWAP_NEEDED_TAG,
     IncidentManager,
 )
 
@@ -280,6 +284,358 @@ def test_auth_expired_opens_emergency_with_own_tag_and_is_independent(
     assert fake_client.cancelled == [auth_receipt]
 
 
+# -- swap_needed: open on crossing / silent / close on swap -------------------
+
+
+def swap_message(character: str) -> str:
+    return f"Finished Master color reward for character: {character}. Swap now."
+
+
+def test_swap_needed_opens_on_crossing_with_own_tag(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+
+    assert SWAP_NEEDED in manager.incidents
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
+    sent = fake_client.sent[0]
+    assert sent["priority"] == 2
+    assert sent["retry"] == 120
+    assert sent["expire"] == 10800
+    assert sent["tags"] == SWAP_NEEDED_TAG
+    assert "Juri" in sent["message"]
+
+
+def test_swap_needed_no_crossing_does_not_open(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    # A character gains counts but stays below 100: no crossing, no incident.
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=[],
+        build_message=swap_message,
+    )
+
+    assert SWAP_NEEDED not in manager.incidents
+    assert fake_client.sent == []
+
+
+def test_swap_needed_silent_while_finished_character_keeps_gaining(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+    fake_client.receipt_info[receipt] = {"acknowledged": 0}
+
+    # Continued matches on the same finished character keep it OPEN and silent.
+    for _ in range(3):
+        fake_clock.advance(60)
+        manager.evaluate_swap_needed(
+            increased_characters=["Juri"],
+            crossed_characters=[],
+            build_message=swap_message,
+        )
+
+    assert SWAP_NEEDED in manager.incidents
+    assert len(fake_client.sent) == 1
+
+
+def test_swap_needed_closes_when_different_character_increases(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # The swap happened: a different character starts gaining. The finished
+    # character gaining in the same poll must not block the close.
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri", "Cammy"],
+        crossed_characters=[],
+        build_message=swap_message,
+    )
+
+    assert SWAP_NEEDED not in manager.incidents
+    assert fake_client.cancelled == [receipt]
+
+
+def test_swap_needed_crossing_while_closing_opens_new_incident(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    # Regression: a different character that increases AND crosses 100 in the
+    # same poll must close the old incident and open a fresh one for the crossed
+    # character — otherwise the crossing is silently lost (it is no longer an
+    # edge after the next database write).
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    juri_receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # The user swaps onto Cammy, who was already at 99: 99 -> 100 both closes
+    # Juri's incident and is a fresh crossing.
+    manager.evaluate_swap_needed(
+        increased_characters=["Cammy"],
+        crossed_characters=["Cammy"],
+        build_message=swap_message,
+    )
+
+    # Juri closed (receipt cancelled) and a new incident opened for Cammy.
+    assert fake_client.cancelled == [juri_receipt]
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert manager.incidents[SWAP_NEEDED]["receipt"] != juri_receipt
+    assert len(fake_client.sent) == 2
+    assert "Cammy" in fake_client.sent[1]["message"]
+
+
+class FlakyPushoverClient(FakePushoverClient):
+    """A fake client whose next ``send`` can be forced to fail (return None)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_send = False
+
+    def send(self, *args: object, **kwargs: object) -> str | None:
+        if self.fail_next_send:
+            self.fail_next_send = False
+            return None
+        return super().send(*args, **kwargs)  # type: ignore[arg-type]
+
+
+def test_swap_open_send_failure_records_receiptless_then_sends_next_poll(
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    # Regression: swap is the only edge-triggered open, so a failed first send
+    # has no next-poll crossing to retry on. It must be recorded receipt-less so
+    # _maintain_emergency pages on the next poll instead of losing the alert.
+    client = FlakyPushoverClient()
+    manager = IncidentManager(
+        client, make_config(), tmp_path / "state.json", clock=fake_clock
+    )
+
+    client.fail_next_send = True
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+
+    # The open send failed, but the incident is recorded (not dropped).
+    assert SWAP_NEEDED in manager.incidents
+    assert manager.incidents[SWAP_NEEDED]["receipt"] is None
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
+    assert client.sent == []
+
+    # Next poll: same character still gaining, no new crossing — the only path
+    # back to an alert is _maintain_emergency. The first real alert goes out.
+    fake_clock.advance(60)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=[],
+        build_message=swap_message,
+    )
+
+    assert manager.incidents[SWAP_NEEDED]["receipt"] is not None
+    assert len(client.sent) == 1
+    assert client.sent[0]["priority"] == 2
+
+
+def test_swap_close_then_open_send_failure_is_recorded_receiptless(
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    # The close-then-open path must also survive a failed open send: closing the
+    # finished incident and then failing to open the newly crossed character
+    # must still record the new incident receipt-less, not lose the crossing.
+    client = FlakyPushoverClient()
+    manager = IncidentManager(
+        client, make_config(), tmp_path / "state.json", clock=fake_clock
+    )
+
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    juri_receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # Cammy 99->100 closes Juri and opens Cammy, but the Cammy open send fails.
+    client.fail_next_send = True
+    manager.evaluate_swap_needed(
+        increased_characters=["Cammy"],
+        crossed_characters=["Cammy"],
+        build_message=swap_message,
+    )
+
+    assert client.cancelled == [juri_receipt]
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert manager.incidents[SWAP_NEEDED]["receipt"] is None
+
+    # Next poll: Cammy still gaining -> the first real alert for Cammy goes out.
+    fake_clock.advance(60)
+    manager.evaluate_swap_needed(
+        increased_characters=["Cammy"],
+        crossed_characters=[],
+        build_message=swap_message,
+    )
+    assert manager.incidents[SWAP_NEEDED]["receipt"] is not None
+
+
+def test_swap_needed_re_arm_fires_after_ack_like_stuck_farm(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # Acknowledge, then keep gaining on the same character (no swap yet).
+    fake_clock.advance(30)
+    fake_client.receipt_info[receipt] = {
+        "acknowledged": 1,
+        "acknowledged_at": fake_clock.now,
+    }
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"], crossed_characters=[], build_message=swap_message
+    )
+    assert len(fake_client.sent) == 1
+
+    # 600 s after the ack with still no swap: one fresh emergency re-page,
+    # exactly as stuck_farm re-arms (shared emergency machinery).
+    fake_clock.advance(600)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"], crossed_characters=[], build_message=swap_message
+    )
+    assert len(fake_client.sent) == 2
+    assert fake_client.sent[1]["priority"] == 2
+    assert manager.incidents[SWAP_NEEDED]["acked_at"] == 0
+
+
+# -- notification polish: per-type sound, profile url, detection timestamp ----
+
+
+def test_stuck_farm_send_has_siren_sound_profile_url_and_timestamp(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(
+        fake_client, make_config, fake_clock, tmp_path, user_code=1234567890
+    )
+
+    manager.evaluate_stuck_farm(active=True, build_message=stuck_message)
+
+    sent = fake_client.sent[0]
+    assert sent["sound"] == "siren"
+    assert sent["url"] == (
+        "https://www.streetfighter.com/6/buckler/profile/1234567890/play"
+    )
+    assert sent["url_title"] == "Open Buckler profile"
+    assert sent["timestamp"] == int(fake_clock.now)
+
+
+def test_swap_needed_send_has_magic_sound_and_profile_url(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(
+        fake_client, make_config, fake_clock, tmp_path, user_code=1234567890
+    )
+
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+
+    sent = fake_client.sent[0]
+    assert sent["sound"] == "magic"
+    assert sent["url"] == (
+        "https://www.streetfighter.com/6/buckler/profile/1234567890/play"
+    )
+    assert sent["timestamp"] == int(fake_clock.now)
+
+
+def test_auth_expired_send_has_falling_sound_and_no_profile_url(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    manager.evaluate_auth_expired(active=True, build_message=auth_message)
+
+    sent = fake_client.sent[0]
+    assert sent["sound"] == "falling"
+    # auth_expired is not page-specific: no deep link.
+    assert sent["url"] is None
+    assert sent["url_title"] is None
+    assert sent["timestamp"] == int(fake_clock.now)
+
+
+def test_api_down_send_has_falling_sound_timestamp_and_no_url(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+
+    sent = fake_client.sent[0]
+    assert sent["sound"] == "falling"
+    assert sent["url"] is None
+    assert sent["timestamp"] == int(fake_clock.now)
+
+
 # -- pending cancel retry -----------------------------------------------------
 
 
@@ -346,6 +702,82 @@ def test_api_down_recovery_without_incident_is_a_noop(
     assert API_DOWN not in manager.incidents
 
 
+# -- low_quota: one-shot self-alert below the floor, close on reset -----------
+
+
+def test_low_quota_opens_once_below_floor(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    fake_client.last_remaining = 499
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA in manager.incidents
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0]["priority"] == 1
+    assert "499" in fake_client.sent[0]["message"]
+
+    # Still low on subsequent polls: one-shot, no further messages.
+    for remaining in (450, 300, 1):
+        fake_client.last_remaining = remaining
+        manager.evaluate_low_quota()
+    assert len(fake_client.sent) == 1
+    assert LOW_QUOTA in manager.incidents
+
+
+def test_low_quota_closes_on_monthly_reset(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    fake_client.last_remaining = 10
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA in manager.incidents
+
+    # Monthly reset pushes remaining back above the floor: close, silently.
+    fake_client.last_remaining = 10000
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA not in manager.incidents
+    # No recovery message is sent (only the original low-quota alert).
+    assert len(fake_client.sent) == 1
+
+
+def test_low_quota_at_floor_does_not_open(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    # Exactly at the floor is not "below" it.
+    fake_client.last_remaining = QUOTA_FLOOR
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA not in manager.incidents
+    assert fake_client.sent == []
+
+
+def test_low_quota_noop_when_remaining_unknown(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    # No Pushover call has reported a remaining count yet.
+    assert fake_client.last_remaining is None
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA not in manager.incidents
+    assert fake_client.sent == []
+
+
 # -- startup reconciliation ---------------------------------------------------
 
 
@@ -362,7 +794,11 @@ def test_corrupt_state_file_triggers_cancel_by_tag_and_rebuild(
     manager.reconcile_on_startup()
 
     # Every emergency incident type's dangling retries are cancelled by tag.
-    assert fake_client.cancelled_tags == [STUCK_FARM_TAG, AUTH_EXPIRED_TAG]
+    assert fake_client.cancelled_tags == [
+        STUCK_FARM_TAG,
+        AUTH_EXPIRED_TAG,
+        SWAP_NEEDED_TAG,
+    ]
     assert manager.incidents == {}
     rebuilt = json.loads(state_path.read_text(encoding="utf-8"))
     assert rebuilt["incidents"] == {}
@@ -380,7 +816,11 @@ def test_missing_state_file_triggers_cancel_by_tag(
     )
     manager.reconcile_on_startup()
 
-    assert fake_client.cancelled_tags == [STUCK_FARM_TAG, AUTH_EXPIRED_TAG]
+    assert fake_client.cancelled_tags == [
+        STUCK_FARM_TAG,
+        AUTH_EXPIRED_TAG,
+        SWAP_NEEDED_TAG,
+    ]
 
 
 def test_valid_state_file_does_not_reconcile(
@@ -422,8 +862,12 @@ def test_reconcile_logs_when_cancel_by_tag_fails(
     with caplog.at_level(logging.WARNING):
         manager.reconcile_on_startup()
 
-    # Both emergency tags are attempted; each failure is surfaced as a warning.
-    assert client.cancelled_tags == [STUCK_FARM_TAG, AUTH_EXPIRED_TAG]
+    # Every emergency tag is attempted; each failure is surfaced as a warning.
+    assert client.cancelled_tags == [
+        STUCK_FARM_TAG,
+        AUTH_EXPIRED_TAG,
+        SWAP_NEEDED_TAG,
+    ]
     assert "cancel_by_tag" in caplog.text
     # Reconciliation still completes: clean state is persisted.
     assert state_path.exists()
