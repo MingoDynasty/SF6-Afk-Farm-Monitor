@@ -54,6 +54,24 @@ When you log into the CFN website (https://www.streetfighter.com/6/buckler/en/),
 stored inside the Request Cookies. You can use your browser's Network Inspector to inspect your HTTP requests and copy
 these variables.
 
+### Refreshing expired cookies
+
+Buckler session cookies expire periodically — this is routine, not a Capcom outage. When they expire, the monitor can
+no longer read your battle counts, so it sends an **emergency-priority** alert:
+
+> Buckler session expired — refresh buckler_id / buckler_r_id / buckler_praise_date in config.toml. All monitoring is
+> blind until then.
+
+To recover:
+
+1. Log back into the CFN website and copy the three fresh cookie values, exactly as described above.
+2. Update `buckler_id`, `buckler_r_id`, and `buckler_praise_date` in `config.toml`.
+3. **Restart the monitor** (`uv run python app.py`). The cookies are read once at startup, so a running process keeps
+   using the old (expired) values until it is restarted.
+
+On the first successful poll after the restart, the app closes the alert and cancels Pushover's re-delivery
+automatically — there is nothing to acknowledge.
+
 ## Usage
 
 Step 1: Run the app in your terminal:
@@ -104,3 +122,17 @@ re-fetches every 30 seconds; `GET /api/status` returns the same data as JSON.
   Firewall prompt — allow it on **Private** networks.
 - There is no authentication; it is intended for your LAN only. Do not port-forward or otherwise expose it to the
   internet (it serves only character battle counts, never your `config.toml`).
+
+## Data and logs
+
+All generated state lives under the repository directory, anchored to the source location so the monitor behaves the
+same regardless of the working directory it is launched from:
+
+- `config.toml` (repository root) — your settings and secrets. You create this from `example.toml`; it is gitignored.
+- `data/database.json` — the per-character battle counts. This is the single state artifact that the monitor and the
+  status page share.
+- `data/notification_state.json` — incident / alert-deduplication state (open incidents and the stuck-farm timer).
+- `logs/info.log` and `logs/debug.log` — rotating run logs (`debug.log` is far chattier and rotates on a larger
+  budget).
+
+The `data/` and `logs/` directories are created automatically on first run, and both are gitignored.
