@@ -2,6 +2,7 @@ import logging.config
 import os
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 
 import schedule
 
@@ -33,14 +34,24 @@ def main():
 
     os.makedirs("logs", exist_ok=True)
 
-    # Log to File - Info
-    info_file_handler = logging.FileHandler("logs/info.log")
+    # Log to File - Info (rotates to keep disk usage bounded on a 24/7 process)
+    info_file_handler = RotatingFileHandler(
+        "logs/info.log",
+        maxBytes=2 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
     info_file_handler.setFormatter(formatter)
     info_file_handler.setLevel(logging.INFO)
     logging.getLogger().addHandler(info_file_handler)
 
-    # Log to File - Debug
-    debug_file_handler = logging.FileHandler("logs/debug.log")
+    # Log to File - Debug (larger budget; debug.log is far chattier)
+    debug_file_handler = RotatingFileHandler(
+        "logs/debug.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
     debug_file_handler.setFormatter(formatter)
     debug_file_handler.setLevel(logging.DEBUG)
     logging.getLogger().addHandler(debug_file_handler)
