@@ -21,12 +21,11 @@ import humanize
 
 from config import ConfigData
 from notifier_client import PushoverClient
+from paths import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-# Step 6 relocates this (and database.json) into a data/ directory; for now it
-# lives alongside database.json in the repo root.
-NOTIFICATION_STATE_FILENAME = Path("notification_state.json")
+NOTIFICATION_STATE_FILENAME = DATA_DIR / "notification_state.json"
 
 STUCK_FARM = "stuck_farm"
 API_DOWN = "api_down"

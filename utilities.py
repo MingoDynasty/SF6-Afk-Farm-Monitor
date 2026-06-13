@@ -15,7 +15,8 @@ def sort_database_by_value(database_filename: str | Path) -> None:
 
 
 def truncated_database(database_filename: str | Path) -> None:
-    with Path(database_filename).open(encoding="utf-8") as file:
+    database_path = Path(database_filename)
+    with database_path.open(encoding="utf-8") as file:
         data = json.load(file)
 
     sorted_by_value = dict(sorted(data.items(), key=lambda item: item[1]))
@@ -23,7 +24,10 @@ def truncated_database(database_filename: str | Path) -> None:
         key: value for (key, value) in sorted_by_value.items() if value < 100
     }
 
-    with Path("shortened.json").open("w", encoding="utf-8") as file:
+    # Write the report next to the database it summarizes (data/ in production,
+    # M8) instead of the current working directory.
+    shortened_path = database_path.with_name("shortened.json")
+    with shortened_path.open("w", encoding="utf-8") as file:
         json_string = json.dumps(less_than_100, indent=2)
         file.write(json_string)
         file.write("\n")

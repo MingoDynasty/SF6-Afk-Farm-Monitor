@@ -14,11 +14,12 @@ from api_service import AuthExpiredError, get_character_win_rates
 from config import ConfigData
 from incident_manager import IncidentManager
 from notifier_client import send_message
+from paths import DATA_DIR
 from utilities import truncated_database
 
 logger = logging.getLogger(__name__)
 
-DATABASE_FILENAME = Path("database.json")
+DATABASE_FILENAME = DATA_DIR / "database.json"
 
 AUTH_EXPIRED_MESSAGE = (
     "Buckler session expired — refresh buckler_id / buckler_r_id / "

@@ -7,7 +7,11 @@ from pathlib import Path
 
 from pydantic.dataclasses import dataclass
 
-CONFIG_FILE = Path("config.toml")
+from paths import BASE_DIR
+
+# config.toml is user-edited and stays in the repo root, but is resolved
+# relative to the source directory so the app finds it from any CWD (M8).
+CONFIG_FILE = BASE_DIR / "config.toml"
 
 
 @dataclass()
