@@ -220,27 +220,34 @@ class IncidentManager:
         #           actually swapped). Continued matches on the finished
         #           character keep the incident OPEN and silent (modulo re-arm).
         incident = self.incidents.get(SWAP_NEEDED)
-        if incident is None:
-            if crossed_characters:
-                finished = crossed_characters[0]
-                self._open_emergency(
+        if incident is not None:
+            # Always present: set via ``extra`` when the swap incident is opened.
+            finished = incident["character"]
+            if not any(character != finished for character in increased_characters):
+                # The finished character is still gaining (or the poll is flat):
+                # stay OPEN and silent, modulo re-raise/re-arm.
+                self._maintain_emergency(
                     SWAP_NEEDED,
                     SWAP_NEEDED_TAG,
+                    incident,
                     lambda: build_message(finished),
-                    extra={"character": finished},
                 )
-            return
-
-        # Always present: set via ``extra`` when the swap incident is opened.
-        finished = incident["character"]
-        if any(character != finished for character in increased_characters):
+                return
+            # A different character started gaining: the swap happened. Close
+            # this incident, then fall through to the open check — if that same
+            # poll *also* crossed 100 on another character (e.g. the user swapped
+            # onto a character already sitting at 99), its incident must open
+            # now. The crossing is an edge that is gone after this poll's
+            # database write, so it cannot be recovered on a later poll.
             self._close_emergency(SWAP_NEEDED, incident)
-        else:
-            self._maintain_emergency(
+
+        if crossed_characters:
+            finished = crossed_characters[0]
+            self._open_emergency(
                 SWAP_NEEDED,
                 SWAP_NEEDED_TAG,
-                incident,
                 lambda: build_message(finished),
+                extra={"character": finished},
             )
 
     def _evaluate_emergency(

@@ -409,6 +409,46 @@ def test_successful_poll_closes_open_auth_expired_incident(
     assert fake_client.cancelled == [receipt]
 
 
+def test_swap_needed_reopens_for_character_crossing_while_closing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    # Both characters sit one match from Master color.
+    write_database(database_path, {"Juri": 99, "Cammy": 99})
+
+    # Juri 99 -> 100 opens the swap incident (finished character = Juri).
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 99}),
+    )
+    juri_receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # Next poll: the user has swapped onto Cammy, who crosses 100 the same poll
+    # that closes Juri's incident. The crossing must not be lost.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 100}),
+    )
+
+    assert SWAP_NEEDED in manager.incidents
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert fake_client.cancelled == [juri_receipt]
+
+
 def test_do_task_opens_low_quota_incident_when_remaining_below_floor(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

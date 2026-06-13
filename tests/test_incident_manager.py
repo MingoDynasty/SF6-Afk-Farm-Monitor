@@ -388,6 +388,40 @@ def test_swap_needed_closes_when_different_character_increases(
     assert fake_client.cancelled == [receipt]
 
 
+def test_swap_needed_crossing_while_closing_opens_new_incident(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    # Regression: a different character that increases AND crosses 100 in the
+    # same poll must close the old incident and open a fresh one for the crossed
+    # character — otherwise the crossing is silently lost (it is no longer an
+    # edge after the next database write).
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    juri_receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # The user swaps onto Cammy, who was already at 99: 99 -> 100 both closes
+    # Juri's incident and is a fresh crossing.
+    manager.evaluate_swap_needed(
+        increased_characters=["Cammy"],
+        crossed_characters=["Cammy"],
+        build_message=swap_message,
+    )
+
+    # Juri closed (receipt cancelled) and a new incident opened for Cammy.
+    assert fake_client.cancelled == [juri_receipt]
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert manager.incidents[SWAP_NEEDED]["receipt"] != juri_receipt
+    assert len(fake_client.sent) == 2
+    assert "Cammy" in fake_client.sent[1]["message"]
+
+
 def test_swap_needed_re_arm_fires_after_ack_like_stuck_farm(
     fake_client: FakePushoverClient,
     fake_clock: FakeClock,
