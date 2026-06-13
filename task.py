@@ -7,7 +7,6 @@ from pathlib import Path
 
 import humanize
 from requests import HTTPError
-from sortedcontainers import SortedDict  # type: ignore[import-untyped]
 
 from api_service import AuthExpiredError, get_character_win_rates
 from config import ConfigData
@@ -31,7 +30,9 @@ def write_to_database(
     database_path = Path(database_filename)
     temporary_database_path = database_path.with_name(f"{database_path.name}.tmp")
     with temporary_database_path.open("w", encoding="utf-8") as file:
-        json_string = json.dumps(data, indent=2)
+        # sort_keys keeps the on-disk file alphabetical (previously achieved by
+        # building a SortedDict; review finding L8 dropped that dependency).
+        json_string = json.dumps(data, indent=2, sort_keys=True)
         file.write(json_string)
         file.write("\n")
 
@@ -109,7 +110,7 @@ def do_task(
         active=False, build_message=lambda: AUTH_EXPIRED_MESSAGE
     )
 
-    current_character_to_battle_count: SortedDict[str, int] = SortedDict()
+    current_character_to_battle_count: dict[str, int] = {}
     for character_win_rate in win_rate_response.character_win_rates:
         if character_win_rate.character_name == "Any":
             continue
