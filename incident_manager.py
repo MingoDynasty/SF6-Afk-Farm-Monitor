@@ -31,6 +31,12 @@ STUCK_FARM = "stuck_farm"
 API_DOWN = "api_down"
 AUTH_EXPIRED = "auth_expired"
 SWAP_NEEDED = "swap_needed"
+LOW_QUOTA = "low_quota"
+
+# Open a one-shot low-quota incident when fewer than this many Pushover messages
+# remain in the monthly allowance, so quota exhaustion never silently mutes real
+# alerts (§9.2). Closes when the count rises back above the floor (monthly reset).
+QUOTA_FLOOR = 500
 STUCK_FARM_TAG = "sf6mon-stuck_farm"
 AUTH_EXPIRED_TAG = "sf6mon-auth_expired"
 SWAP_NEEDED_TAG = "sf6mon-swap_needed"
@@ -393,4 +399,46 @@ class IncidentManager:
             self.client.send(message, priority=0)
         del self.incidents[API_DOWN]
         logger.info("api_down incident CLOSED (recovery observed): %s", message)
+        self._save()
+
+    # -- low_quota incident (one-shot, high priority) -----------------------
+
+    def evaluate_low_quota(self) -> None:
+        """Open a one-shot alert when the Pushover monthly quota runs low (§9.2).
+
+        Reads the latest ``X-Limit-App-Remaining`` the client captured on any
+        send/receipt/cancel this poll. ``None`` means no Pushover call has been
+        made yet (e.g. a healthy poll that sent nothing, or Pushover disabled),
+        so there is no quota information to act on.
+        """
+        remaining = self.client.last_remaining
+        if remaining is None:
+            return
+        incident = self.incidents.get(LOW_QUOTA)
+        if remaining < QUOTA_FLOOR:
+            if incident is None:
+                self._open_low_quota(remaining)
+            # Already OPEN: one-shot, send nothing more.
+        elif incident is not None:
+            self._close_low_quota(remaining)
+
+    def _open_low_quota(self, remaining: int) -> None:
+        message = (
+            f"Pushover quota low: only {remaining} messages left this month. "
+            "Real alerts will be dropped once it hits zero."
+        )
+        if self.enabled:
+            # priority=1 returns no receipt; best-effort one-shot send.
+            self.client.send(message, priority=1)
+        self.incidents[LOW_QUOTA] = {"opened_at": self.clock()}
+        logger.warning("low_quota incident OPENED: %s", message)
+        self._save()
+
+    def _close_low_quota(self, remaining: int) -> None:
+        # Recovery (monthly reset) is silent: announcing it would itself spend a
+        # message, and there is nothing for the user to act on.
+        del self.incidents[LOW_QUOTA]
+        logger.info(
+            "low_quota incident CLOSED: quota recovered to %s messages.", remaining
+        )
         self._save()

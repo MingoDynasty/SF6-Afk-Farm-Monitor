@@ -11,6 +11,8 @@ from incident_manager import (
     API_DOWN,
     AUTH_EXPIRED,
     AUTH_EXPIRED_TAG,
+    LOW_QUOTA,
+    QUOTA_FLOOR,
     STUCK_FARM,
     STUCK_FARM_TAG,
     SWAP_NEEDED,
@@ -486,6 +488,82 @@ def test_api_down_recovery_without_incident_is_a_noop(
 
     assert fake_client.sent == []
     assert API_DOWN not in manager.incidents
+
+
+# -- low_quota: one-shot self-alert below the floor, close on reset -----------
+
+
+def test_low_quota_opens_once_below_floor(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    fake_client.last_remaining = 499
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA in manager.incidents
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0]["priority"] == 1
+    assert "499" in fake_client.sent[0]["message"]
+
+    # Still low on subsequent polls: one-shot, no further messages.
+    for remaining in (450, 300, 1):
+        fake_client.last_remaining = remaining
+        manager.evaluate_low_quota()
+    assert len(fake_client.sent) == 1
+    assert LOW_QUOTA in manager.incidents
+
+
+def test_low_quota_closes_on_monthly_reset(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    fake_client.last_remaining = 10
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA in manager.incidents
+
+    # Monthly reset pushes remaining back above the floor: close, silently.
+    fake_client.last_remaining = 10000
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA not in manager.incidents
+    # No recovery message is sent (only the original low-quota alert).
+    assert len(fake_client.sent) == 1
+
+
+def test_low_quota_at_floor_does_not_open(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    # Exactly at the floor is not "below" it.
+    fake_client.last_remaining = QUOTA_FLOOR
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA not in manager.incidents
+    assert fake_client.sent == []
+
+
+def test_low_quota_noop_when_remaining_unknown(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    # No Pushover call has reported a remaining count yet.
+    assert fake_client.last_remaining is None
+    manager.evaluate_low_quota()
+    assert LOW_QUOTA not in manager.incidents
+    assert fake_client.sent == []
 
 
 # -- startup reconciliation ---------------------------------------------------

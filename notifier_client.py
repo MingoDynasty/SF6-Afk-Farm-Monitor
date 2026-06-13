@@ -26,6 +26,10 @@ class PushoverClient:
         self.user_key = user_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Most recent X-Limit-App-Remaining seen on any response, so the
+        # IncidentManager can open a low-quota incident before sends start
+        # failing (ALERT_DEDUPLICATION_PROPOSAL.md §9.2). None until first call.
+        self.last_remaining: int | None = None
 
     def send(
         self,
@@ -124,6 +128,10 @@ class PushoverClient:
 
         remaining = response.headers.get("X-Limit-App-Remaining")
         if remaining is not None:
+            try:
+                self.last_remaining = int(remaining)
+            except ValueError:
+                pass
             logger.info(
                 "Pushover monthly quota: %s messages remaining.",
                 remaining,

@@ -15,6 +15,7 @@ from incident_manager import (
     API_DOWN,
     AUTH_EXPIRED,
     AUTH_EXPIRED_TAG,
+    LOW_QUOTA,
     STUCK_FARM,
     SWAP_NEEDED,
     SWAP_NEEDED_TAG,
@@ -406,6 +407,33 @@ def test_successful_poll_closes_open_auth_expired_incident(
     # First successful poll closes the incident and cancels the receipt.
     assert AUTH_EXPIRED not in manager.incidents
     assert fake_client.cancelled == [receipt]
+
+
+def test_do_task_opens_low_quota_incident_when_remaining_below_floor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Ryu": 1})
+
+    # A prior Pushover call this session reported a low remaining count.
+    fake_client.last_remaining = 400
+
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Ryu": 1}),
+    )
+
+    assert LOW_QUOTA in manager.incidents
 
 
 def test_write_to_database_uses_atomic_replace(

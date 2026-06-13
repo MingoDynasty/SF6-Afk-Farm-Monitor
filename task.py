@@ -186,3 +186,7 @@ def do_task(
         crossed_characters=crossed_threshold,
         build_message=build_swap_message,
     )
+
+    # Self-alert on low Pushover quota using the remaining count captured by any
+    # send this poll, so quota exhaustion never silently mutes real alerts (§9.2).
+    incident_manager.evaluate_low_quota()
