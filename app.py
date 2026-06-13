@@ -5,11 +5,13 @@ import time
 
 import schedule
 
-from config import config
+from config import load_config
 from task import do_task
 
 
 def main():
+    config = load_config()
+
     #
     # Logging setup
     #
@@ -45,7 +47,7 @@ def main():
 
     def run_task_safely():
         try:
-            do_task()
+            do_task(config)
         except Exception:
             logger.exception("Scheduled monitor task failed; continuing.")
 
