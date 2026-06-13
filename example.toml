@@ -37,3 +37,8 @@ emergency_expire = 10800  # 3 hours
 # After you acknowledge a stuck-farm alert that hasn't actually recovered yet,
 # re-alert this many seconds later (an on-call style ack timeout). Set 0 to disable.
 re_alert_after_ack = 600  # 10 minutes
+
+# Local status page (status_server.py) configuration.
+# Port the status page binds on (0.0.0.0, LAN-accessible). Avoid 8080 if Steam
+# is running, as it occupies that port. Omit this key to use the default (8675).
+status_page_port = 8675
