@@ -16,6 +16,8 @@ polling_interval = 60  # 1 minute
 battle_count_timeout = 360  # 6 minutes
 
 # CFN configuration
+# These three are session cookies. Populate them automatically with
+# `uv run python login.py`, or copy them in by hand (see README).
 buckler_id = ""
 buckler_r_id = ""
 buckler_praise_date = 1234567890123

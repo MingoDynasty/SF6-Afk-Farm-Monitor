@@ -19,6 +19,11 @@ dev = [
     "pytest-cov>=5.0",
     "types-requests>=2.32",
 ]
+# `login.py` opens an embedded browser via pywebview to capture the Buckler
+# cookies; the monitor itself never needs it. Opt in with `uv sync --group login`
+# (login.py prints an install hint when it is missing). A dependency-group rather
+# than a project extra, to match how `dev` is declared in this uv-managed project.
+login = ["pywebview>=5"]
 
 #[project.scripts]
 #test = "scripts.test:main"

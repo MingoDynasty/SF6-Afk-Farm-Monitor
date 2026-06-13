@@ -14,7 +14,8 @@ conditions are met, then a notification is sent via Pushover.
 2. Inside `config.toml`, update the following variables:
     1. user_code
     2. target_season_id
-    3. buckler_id, buckler_r_id, buckler_praise_date
+    3. buckler_id, buckler_r_id, buckler_praise_date (or leave blank and fill them with `login.py` — see
+       [Getting Buckler Variables](#getting-buckler-variables))
     4. pushover_app_key, pushover_user_key
 3. Feel free to change any other settings inside the TOML file, or leave them at their defaults.
 
@@ -50,23 +51,40 @@ tuning as stuck-farm alerts, and the notification deep-links straight to your Bu
 
 ## Getting Buckler Variables
 
-When you log into the CFN website (https://www.streetfighter.com/6/buckler/en/), there are three Buckler variables
-stored inside the Request Cookies. You can use your browser's Network Inspector to inspect your HTTP requests and copy
-these variables.
+The three Buckler variables (`buckler_id`, `buckler_r_id`, `buckler_praise_date`) are session cookies set when you log
+into the CFN website. There are two ways to get them into `config.toml`.
+
+### Automatic (recommended): `login.py`
+
+```shell
+uv sync --group login   # one-time: installs the embedded-browser dependency (pywebview)
+uv run python login.py
+```
+
+A browser window opens at the CFN/Buckler site. Log in normally — Capcom ID, plus any MFA/captcha, are handled right
+there in the window. Once you're logged in, the window closes itself, the three cookies are verified against the real
+API, and they're written into `config.toml` for you. Nothing is typed by hand and the cookies never leave your machine.
+
+If `pywebview` isn't installed, `login.py` prints an install hint and you can fall back to the manual steps below.
+
+### Manual (fallback): browser DevTools
+
+Log into https://www.streetfighter.com/6/buckler/en/, open your browser's Network Inspector, and copy the three
+variables out of a request's **Request Cookies** header into `buckler_id`, `buckler_r_id`, and `buckler_praise_date`
+in `config.toml`.
 
 ### Refreshing expired cookies
 
 Buckler session cookies expire periodically — this is routine, not a Capcom outage. When they expire, the monitor can
 no longer read your battle counts, so it sends an **emergency-priority** alert:
 
-> Buckler session expired — refresh buckler_id / buckler_r_id / buckler_praise_date in config.toml. All monitoring is
-> blind until then.
+> Buckler session expired — run `uv run python login.py` to re-capture cookies, then restart the monitor. All
+> monitoring is blind until then.
 
 To recover:
 
-1. Log back into the CFN website and copy the three fresh cookie values, exactly as described above.
-2. Update `buckler_id`, `buckler_r_id`, and `buckler_praise_date` in `config.toml`.
-3. **Restart the monitor** (`uv run python app.py`). The cookies are read once at startup, so a running process keeps
+1. Re-capture fresh cookies with `uv run python login.py` (or copy them in by hand, as above).
+2. **Restart the monitor** (`uv run python app.py`). The cookies are read once at startup, so a running process keeps
    using the old (expired) values until it is restarted.
 
 On the first successful poll after the restart, the app closes the alert and cancels Pushover's re-delivery

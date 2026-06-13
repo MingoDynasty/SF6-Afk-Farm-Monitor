@@ -2,6 +2,8 @@
 Manages the config file for the app, and shares that data to all other modules.
 """
 
+import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Annotated
@@ -49,3 +51,63 @@ def load_config(config_file: str | Path = CONFIG_FILE) -> ConfigData:
     with Path(config_file).open("rb") as _file:
         config_dict = tomllib.load(_file)
     return ConfigData(**config_dict)
+
+
+def _toml_basic_string(value: str) -> str:
+    """Render a string as a TOML basic (double-quoted) string."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _line_ending(line: str) -> str:
+    """Return the trailing newline of a line ("\\r\\n", "\\n", or "" at EOF)."""
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\n"):
+        return "\n"
+    return ""
+
+
+def update_buckler_cookies(
+    buckler_id: str,
+    buckler_r_id: str,
+    buckler_praise_date: int,
+    config_file: str | Path = CONFIG_FILE,
+) -> None:
+    """Rewrite the three ``buckler_*`` values in ``config.toml`` in place.
+
+    A surgical line-replace that preserves comments and every other setting:
+    ``tomllib`` is read-only and a full parse-and-redump would drop the file's
+    comments. ``buckler_id``/``buckler_r_id`` are written as TOML basic strings;
+    ``buckler_praise_date`` is written unquoted to match its ``int`` type on
+    :class:`ConfigData`. The file is written via a temp file + :func:`os.replace`
+    so a crash mid-write cannot corrupt ``config.toml`` (review finding M1).
+    """
+    config_path = Path(config_file)
+    updates = {
+        "buckler_id": _toml_basic_string(buckler_id),
+        "buckler_r_id": _toml_basic_string(buckler_r_id),
+        "buckler_praise_date": str(int(buckler_praise_date)),
+    }
+
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    remaining = dict(updates)
+    for index, line in enumerate(lines):
+        for key in list(remaining):
+            # Match `key =` / `key=` at the start of the line (ignoring leading
+            # whitespace), but never a commented-out line.
+            if re.match(rf"\s*{re.escape(key)}\s*=", line) and not line.lstrip().startswith("#"):
+                lines[index] = f"{key} = {remaining.pop(key)}{_line_ending(line)}"
+                break
+
+    # Any key absent from the file is appended (defensive — the example.toml
+    # ships all three, so this should not normally trigger).
+    if remaining:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        for key, value in remaining.items():
+            lines.append(f"{key} = {value}\n")
+
+    temporary_path = config_path.with_name(f"{config_path.name}.tmp")
+    temporary_path.write_text("".join(lines), encoding="utf-8")
+    os.replace(temporary_path, config_path)
