@@ -4,8 +4,6 @@ from urllib.parse import quote
 
 import requests
 
-from config import ConfigData
-
 logger = logging.getLogger(__name__)
 
 PUSHOVER_API_BASE_URL = "https://api.pushover.net/1"
@@ -172,10 +170,3 @@ class PushoverClient:
             return None
 
         return response_json
-
-
-def send_message(message: str, config: ConfigData) -> None:
-    if not config.pushover_enabled:
-        return
-    pushover_client = PushoverClient(config.pushover_app_key, config.pushover_user_key)
-    pushover_client.send(message)

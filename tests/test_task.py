@@ -124,7 +124,7 @@ def test_threshold_crossing_opens_swap_needed_incident(
 
     assert read_database(database_path) == {"Juri": 100}
     # The 99 -> 100 crossing now opens a swap_needed emergency incident
-    # (replaces the ffb650b per-match re-fire via send_message).
+    # (replaces the ffb650b per-match re-fire).
     assert SWAP_NEEDED in manager.incidents
     assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
     assert len(fake_client.sent) == 1
