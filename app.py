@@ -6,6 +6,8 @@ import time
 import schedule
 
 from config import load_config
+from incident_manager import IncidentManager
+from notifier_client import PushoverClient
 from task import do_task
 
 
@@ -45,9 +47,13 @@ def main():
 
     logger = logging.getLogger(__name__)
 
+    pushover_client = PushoverClient(config.pushover_app_key, config.pushover_user_key)
+    incident_manager = IncidentManager(pushover_client, config)
+    incident_manager.reconcile_on_startup()
+
     def run_task_safely():
         try:
-            do_task(config)
+            do_task(config, incident_manager)
         except Exception:
             logger.exception("Scheduled monitor task failed; continuing.")
 
