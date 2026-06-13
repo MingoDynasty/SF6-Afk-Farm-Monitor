@@ -10,7 +10,7 @@ import humanize
 from requests import HTTPError
 from sortedcontainers import SortedDict  # type: ignore[import-untyped]
 
-from api_service import get_character_win_rates
+from api_service import AuthExpiredError, get_character_win_rates
 from config import ConfigData
 from incident_manager import IncidentManager
 from notifier_client import send_message
@@ -19,6 +19,11 @@ from utilities import truncated_database
 logger = logging.getLogger(__name__)
 
 DATABASE_FILENAME = Path("database.json")
+
+AUTH_EXPIRED_MESSAGE = (
+    "Buckler session expired — refresh buckler_id / buckler_r_id / "
+    "buckler_praise_date in config.toml. All monitoring is blind until then."
+)
 
 notifications_to_send: deque[str] = deque()
 
@@ -82,6 +87,14 @@ def do_task(
 
     try:
         win_rate_response = get_character_win_rates(config)
+    except AuthExpiredError:
+        # Expired cookies are actionable and blind all monitoring; an emergency
+        # incident nags until the user refreshes them (review finding M3).
+        logger.error(AUTH_EXPIRED_MESSAGE, exc_info=True)
+        incident_manager.evaluate_auth_expired(
+            active=True, build_message=lambda: AUTH_EXPIRED_MESSAGE
+        )
+        return
     except HTTPError:
         message = "Capcom Buckler website down?"
         logger.error(message, exc_info=True)
@@ -93,8 +106,11 @@ def do_task(
         incident_manager.evaluate_api_down(active=True, down_message=message)
         return
 
-    # The poll succeeded: clear any open api_down incident (courtesy recovery).
+    # The poll succeeded: clear any open api_down / auth_expired incident.
     incident_manager.evaluate_api_down(active=False)
+    incident_manager.evaluate_auth_expired(
+        active=False, build_message=lambda: AUTH_EXPIRED_MESSAGE
+    )
 
     current_character_to_battle_count: SortedDict[str, int] = SortedDict()
     for character_win_rate in win_rate_response.character_win_rates:

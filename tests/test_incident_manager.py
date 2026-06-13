@@ -6,6 +6,8 @@ from config import ConfigData
 from conftest import FakeClock, FakePushoverClient
 from incident_manager import (
     API_DOWN,
+    AUTH_EXPIRED,
+    AUTH_EXPIRED_TAG,
     STUCK_FARM,
     STUCK_FARM_TAG,
     IncidentManager,
@@ -239,6 +241,42 @@ def test_open_send_failure_does_not_record_incident(
     assert STUCK_FARM not in manager.incidents
 
 
+# -- auth_expired: emergency incident, independent of stuck_farm ---------------
+
+
+def auth_message() -> str:
+    return "refresh your Buckler cookies"
+
+
+def test_auth_expired_opens_emergency_with_own_tag_and_is_independent(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    manager.evaluate_auth_expired(active=True, build_message=auth_message)
+    assert AUTH_EXPIRED in manager.incidents
+    sent = fake_client.sent[0]
+    assert sent["priority"] == 2
+    assert sent["retry"] == 120
+    assert sent["expire"] == 10800
+    assert sent["tags"] == AUTH_EXPIRED_TAG
+
+    # stuck_farm is tracked separately; both can be OPEN at once.
+    manager.evaluate_stuck_farm(active=True, build_message=stuck_message)
+    assert STUCK_FARM in manager.incidents
+    assert AUTH_EXPIRED in manager.incidents
+
+    # Closing auth_expired cancels only its own receipt and leaves stuck_farm.
+    auth_receipt = manager.incidents[AUTH_EXPIRED]["receipt"]
+    manager.evaluate_auth_expired(active=False, build_message=auth_message)
+    assert AUTH_EXPIRED not in manager.incidents
+    assert STUCK_FARM in manager.incidents
+    assert fake_client.cancelled == [auth_receipt]
+
+
 # -- pending cancel retry -----------------------------------------------------
 
 
@@ -320,7 +358,8 @@ def test_corrupt_state_file_triggers_cancel_by_tag_and_rebuild(
     manager = IncidentManager(fake_client, make_config(), state_path, clock=fake_clock)
     manager.reconcile_on_startup()
 
-    assert fake_client.cancelled_tags == [STUCK_FARM_TAG]
+    # Every emergency incident type's dangling retries are cancelled by tag.
+    assert fake_client.cancelled_tags == [STUCK_FARM_TAG, AUTH_EXPIRED_TAG]
     assert manager.incidents == {}
     rebuilt = json.loads(state_path.read_text(encoding="utf-8"))
     assert rebuilt["incidents"] == {}
@@ -338,7 +377,7 @@ def test_missing_state_file_triggers_cancel_by_tag(
     )
     manager.reconcile_on_startup()
 
-    assert fake_client.cancelled_tags == [STUCK_FARM_TAG]
+    assert fake_client.cancelled_tags == [STUCK_FARM_TAG, AUTH_EXPIRED_TAG]
 
 
 def test_valid_state_file_does_not_reconcile(

@@ -4,11 +4,20 @@ from collections.abc import Callable, Generator
 from pathlib import Path
 
 import pytest
+import requests
+from requests import HTTPError
 
 import task
+from api_service import AuthExpiredError
 from config import ConfigData
 from conftest import FakeClock, FakePushoverClient
-from incident_manager import STUCK_FARM, IncidentManager
+from incident_manager import (
+    API_DOWN,
+    AUTH_EXPIRED,
+    AUTH_EXPIRED_TAG,
+    STUCK_FARM,
+    IncidentManager,
+)
 from model import CharacterWinRate, WinRateResponse
 
 
@@ -250,6 +259,99 @@ def test_api_failure_opens_api_down_incident(
 
     assert len(fake_client.sent) == 1
     assert fake_client.sent[0]["priority"] == 1
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [
+        HTTPError("HTTP 500"),
+        requests.ConnectionError("no route to host"),
+        requests.Timeout("read timed out"),
+    ],
+)
+def test_outage_errors_open_api_down_not_auth_expired(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    exception: Exception,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+
+    def fake_get_character_win_rates(config: ConfigData) -> WinRateResponse:
+        raise exception
+
+    monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
+
+    task.do_task(config_data, manager, database_path)
+
+    assert API_DOWN in manager.incidents
+    assert AUTH_EXPIRED not in manager.incidents
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0]["priority"] == 1
+
+
+def test_auth_expired_opens_emergency_incident(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+
+    def fake_get_character_win_rates(config: ConfigData) -> WinRateResponse:
+        raise AuthExpiredError("cookies expired")
+
+    monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
+
+    task.do_task(config_data, manager, database_path)
+
+    # Emergency incident (priority 2) with its own tag, not an api_down.
+    assert AUTH_EXPIRED in manager.incidents
+    assert API_DOWN not in manager.incidents
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0]["priority"] == 2
+    assert fake_client.sent[0]["tags"] == AUTH_EXPIRED_TAG
+
+
+def test_successful_poll_closes_open_auth_expired_incident(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Ryu": 1})
+
+    # An auth_expired incident is already open from a previous failed poll.
+    manager.evaluate_auth_expired(active=True, build_message=lambda: "refresh cookies")
+    receipt = manager.incidents[AUTH_EXPIRED]["receipt"]
+    sent_messages: list[str] = []
+
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Ryu": 1}),
+        sent_messages,
+    )
+
+    # First successful poll closes the incident and cancels the receipt.
+    assert AUTH_EXPIRED not in manager.incidents
+    assert fake_client.cancelled == [receipt]
 
 
 def test_write_to_database_uses_atomic_replace(
