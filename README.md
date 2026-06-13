@@ -21,6 +21,25 @@ conditions are met, then a notification is sent via Pushover.
 `target_season_id` is the Buckler season to query. Update it when Capcom starts recording battle counts under a new
 season.
 
+### Stuck-farm alerts (emergency priority)
+
+A stuck farm is sent as a Pushover **emergency-priority** alert: Pushover re-delivers it until you acknowledge it on
+your phone, and the app sends exactly one alert per incident instead of one per poll. Three optional settings tune this
+(see `ALERT_DEDUPLICATION_PROPOSAL.md` for the full design):
+
+- `emergency_retry` (default `120`): how often, in seconds, Pushover re-delivers an unacknowledged alert (minimum 30).
+- `emergency_expire` (default `10800`): how long, in seconds, Pushover keeps re-delivering before giving up (max 10800
+  = 3 hours). If an alert expires unacknowledged while the farm is still stuck, the app raises a fresh one.
+- `re_alert_after_ack` (default `600`): after you acknowledge an alert but the farm hasn't actually recovered yet,
+  re-alert this many seconds later (an on-call style ack timeout). Set `0` to disable.
+
+Acknowledging an alert only silences Pushover's re-delivery — the incident closes (and any remaining nagging is
+cancelled) only when the app observes the farm recover (a battle count increments again).
+
+> **Deployment note:** emergency priority does *not* bypass your phone's OS-level Do Not Disturb by default. To let a
+> stuck-farm alert wake you overnight, enable **Critical Alerts** for Pushover on iOS, or allow Pushover's alarm sound
+> and DND override on Android.
+
 ## Getting Buckler Variables
 
 When you log into the CFN website (https://www.streetfighter.com/6/buckler/en/), there are three Buckler variables
