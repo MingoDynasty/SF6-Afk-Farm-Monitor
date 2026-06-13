@@ -51,6 +51,7 @@ class FakePushoverClient(PushoverClient):
         sound: str | None = None,
         url: str | None = None,
         url_title: str | None = None,
+        timestamp: int | None = None,
     ) -> str | None:
         self.sent.append(
             {
@@ -59,6 +60,10 @@ class FakePushoverClient(PushoverClient):
                 "retry": retry,
                 "expire": expire,
                 "tags": tags,
+                "sound": sound,
+                "url": url,
+                "url_title": url_title,
+                "timestamp": timestamp,
             }
         )
         # Mirror the real client: only emergency (priority=2) sends return a

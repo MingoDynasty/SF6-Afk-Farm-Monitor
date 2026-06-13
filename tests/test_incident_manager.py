@@ -424,6 +424,88 @@ def test_swap_needed_re_arm_fires_after_ack_like_stuck_farm(
     assert manager.incidents[SWAP_NEEDED]["acked_at"] == 0
 
 
+# -- notification polish: per-type sound, profile url, detection timestamp ----
+
+
+def test_stuck_farm_send_has_siren_sound_profile_url_and_timestamp(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(
+        fake_client, make_config, fake_clock, tmp_path, user_code=1234567890
+    )
+
+    manager.evaluate_stuck_farm(active=True, build_message=stuck_message)
+
+    sent = fake_client.sent[0]
+    assert sent["sound"] == "siren"
+    assert sent["url"] == (
+        "https://www.streetfighter.com/6/buckler/profile/1234567890/play"
+    )
+    assert sent["url_title"] == "Open Buckler profile"
+    assert sent["timestamp"] == int(fake_clock.now)
+
+
+def test_swap_needed_send_has_magic_sound_and_profile_url(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(
+        fake_client, make_config, fake_clock, tmp_path, user_code=1234567890
+    )
+
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+
+    sent = fake_client.sent[0]
+    assert sent["sound"] == "magic"
+    assert sent["url"] == (
+        "https://www.streetfighter.com/6/buckler/profile/1234567890/play"
+    )
+    assert sent["timestamp"] == int(fake_clock.now)
+
+
+def test_auth_expired_send_has_falling_sound_and_no_profile_url(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    manager.evaluate_auth_expired(active=True, build_message=auth_message)
+
+    sent = fake_client.sent[0]
+    assert sent["sound"] == "falling"
+    # auth_expired is not page-specific: no deep link.
+    assert sent["url"] is None
+    assert sent["url_title"] is None
+    assert sent["timestamp"] == int(fake_clock.now)
+
+
+def test_api_down_send_has_falling_sound_timestamp_and_no_url(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+
+    sent = fake_client.sent[0]
+    assert sent["sound"] == "falling"
+    assert sent["url"] is None
+    assert sent["timestamp"] == int(fake_clock.now)
+
+
 # -- pending cancel retry -----------------------------------------------------
 
 

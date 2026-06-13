@@ -41,6 +41,7 @@ class PushoverClient:
         sound: str | None = None,
         url: str | None = None,
         url_title: str | None = None,
+        timestamp: int | None = None,
     ) -> str | None:
         payload: JsonDict = {
             "token": self.app_key,
@@ -55,6 +56,7 @@ class PushoverClient:
             "sound": sound,
             "url": url,
             "url_title": url_title,
+            "timestamp": timestamp,
         }
         payload.update(
             {key: value for key, value in optional_fields.items() if value is not None}

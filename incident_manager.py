@@ -50,6 +50,21 @@ EMERGENCY_TAGS = {
     SWAP_NEEDED: SWAP_NEEDED_TAG,
 }
 
+# Distinct built-in Pushover sound per incident type so alerts are
+# distinguishable from the lock screen without reading them (§9.1).
+INCIDENT_SOUNDS = {
+    STUCK_FARM: "siren",
+    SWAP_NEEDED: "magic",
+    AUTH_EXPIRED: "falling",
+    API_DOWN: "falling",
+}
+
+# Incident types that deep-link to the monitored profile's play page (§9.3):
+# one tap from the notification to verification. Only the two actionable
+# farm-progress alerts carry it; auth/api/quota alerts are not page-specific.
+PROFILE_LINK_KINDS = frozenset({STUCK_FARM, SWAP_NEEDED})
+PROFILE_LINK_TITLE = "Open Buckler profile"
+
 
 class IncidentManager:
     """Runs the §2 state machine and owns ``notification_state.json``."""
@@ -240,13 +255,25 @@ class IncidentManager:
         elif incident is not None:
             self._close_emergency(kind, incident)
 
-    def _send_emergency(self, message: str, tag: str) -> str | None:
+    def _profile_url(self) -> str:
+        return (
+            "https://www.streetfighter.com/6/buckler/profile/"
+            f"{self.config.user_code}/play"
+        )
+
+    def _send_emergency(self, kind: str, message: str, tag: str) -> str | None:
+        url = self._profile_url() if kind in PROFILE_LINK_KINDS else None
+        url_title = PROFILE_LINK_TITLE if url else None
         return self.client.send(
             message,
             priority=2,
             retry=self.config.emergency_retry,
             expire=self.config.emergency_expire,
             tags=tag,
+            sound=INCIDENT_SOUNDS.get(kind),
+            url=url,
+            url_title=url_title,
+            timestamp=int(self.clock()),
         )
 
     def _open_emergency(
@@ -259,7 +286,7 @@ class IncidentManager:
         message = build_message()
         receipt: str | None = None
         if self.enabled:
-            receipt = self._send_emergency(message, tag)
+            receipt = self._send_emergency(kind, message, tag)
             if receipt is None:
                 logger.error("%s emergency send failed; will retry next poll.", kind)
                 return
@@ -344,7 +371,7 @@ class IncidentManager:
         build_message: Callable[[], str],
         reason: str,
     ) -> None:
-        receipt = self._send_emergency(build_message(), tag)
+        receipt = self._send_emergency(kind, build_message(), tag)
         if receipt is None:
             logger.error("%s %s send failed; will retry next poll.", kind, reason)
             return
@@ -386,7 +413,12 @@ class IncidentManager:
         if self.enabled:
             # priority=1 returns no receipt, so the return value is not a
             # success signal; this is a best-effort one-shot send.
-            self.client.send(down_message, priority=1)
+            self.client.send(
+                down_message,
+                priority=1,
+                sound=INCIDENT_SOUNDS.get(API_DOWN),
+                timestamp=int(self.clock()),
+            )
         self.incidents[API_DOWN] = {"opened_at": self.clock()}
         logger.warning("api_down incident OPENED: %s", down_message)
         self._save()
@@ -396,7 +428,7 @@ class IncidentManager:
         outage = timedelta(seconds=now - (incident.get("opened_at") or now))
         message = f"Capcom Buckler API recovered after {humanize.precisedelta(outage)}."
         if self.enabled:
-            self.client.send(message, priority=0)
+            self.client.send(message, priority=0, timestamp=int(now))
         del self.incidents[API_DOWN]
         logger.info("api_down incident CLOSED (recovery observed): %s", message)
         self._save()
@@ -429,7 +461,7 @@ class IncidentManager:
         )
         if self.enabled:
             # priority=1 returns no receipt; best-effort one-shot send.
-            self.client.send(message, priority=1)
+            self.client.send(message, priority=1, timestamp=int(self.clock()))
         self.incidents[LOW_QUOTA] = {"opened_at": self.clock()}
         logger.warning("low_quota incident OPENED: %s", message)
         self._save()
