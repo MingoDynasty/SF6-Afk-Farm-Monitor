@@ -32,6 +32,10 @@ class ConfigData:
     emergency_retry: int = 120
     emergency_expire: int = 10800
     re_alert_after_ack: int = 600
+    # Port for the optional local status page (STATUS_PAGE_PROPOSAL.md §4). Has a
+    # default so a monitor config.toml without the key still loads; not 8080,
+    # which Steam occupies on the author's machine.
+    status_page_port: int = 8675
 
 
 def load_config(config_file: str | Path = CONFIG_FILE) -> ConfigData:
