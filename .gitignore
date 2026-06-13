@@ -509,10 +509,6 @@ marimo/_lsp/
 __marimo__/
 
 config.toml
-database.json
-notification_state.json
-response.json
+data/
 ignore/
 logs/
-
-shortened.json

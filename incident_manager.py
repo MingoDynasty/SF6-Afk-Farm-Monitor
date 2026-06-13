@@ -21,16 +21,25 @@ import humanize
 
 from config import ConfigData
 from notifier_client import PushoverClient
+from paths import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-# Step 6 relocates this (and database.json) into a data/ directory; for now it
-# lives alongside database.json in the repo root.
-NOTIFICATION_STATE_FILENAME = Path("notification_state.json")
+NOTIFICATION_STATE_FILENAME = DATA_DIR / "notification_state.json"
 
 STUCK_FARM = "stuck_farm"
 API_DOWN = "api_down"
+AUTH_EXPIRED = "auth_expired"
 STUCK_FARM_TAG = "sf6mon-stuck_farm"
+AUTH_EXPIRED_TAG = "sf6mon-auth_expired"
+
+# Emergency incident types share one state machine (open / maintain / re-raise /
+# re-arm / close on observed recovery); each carries its own Pushover tag so
+# startup reconciliation can cancel dangling server-side retries by tag (§6).
+EMERGENCY_TAGS = {
+    STUCK_FARM: STUCK_FARM_TAG,
+    AUTH_EXPIRED: AUTH_EXPIRED_TAG,
+}
 
 
 class IncidentManager:
@@ -117,19 +126,21 @@ class IncidentManager:
             "Notification state was missing or corrupt; "
             "cancelling any dangling emergency retries by tag."
         )
-        if self.enabled and not self.client.cancel_by_tag(STUCK_FARM_TAG):
-            # A transient failure here can leave server-side emergency retries
-            # dangling until ack/expire (bounded, self-healing). We do NOT park
-            # the tag for a later retry: tags are per-incident-kind and reused,
-            # so a deferred cancel_by_tag could cancel a *future* real
-            # incident's retries. Surface it instead. See
-            # docs/PR_REVIEW_PUSHBACK.md (P3).
-            logger.warning(
-                "cancel_by_tag(%s) failed during startup reconciliation; "
-                "any dangling emergency retries persist until acknowledged or "
-                "expired.",
-                STUCK_FARM_TAG,
-            )
+        if self.enabled:
+            for tag in EMERGENCY_TAGS.values():
+                if not self.client.cancel_by_tag(tag):
+                    # A transient failure here can leave server-side emergency
+                    # retries dangling until ack/expire (bounded, self-healing).
+                    # We do NOT park the tag for a later retry: tags are
+                    # per-incident-kind and reused, so a deferred cancel_by_tag
+                    # could cancel a *future* real incident's retries. Surface it
+                    # instead. See docs/PR_REVIEW_PUSHBACK.md (P3).
+                    logger.warning(
+                        "cancel_by_tag(%s) failed during startup reconciliation; "
+                        "any dangling emergency retries persist until acknowledged "
+                        "or expired.",
+                        tag,
+                    )
         self._save()
 
     def retry_pending_cancels(self) -> None:
@@ -154,73 +165,100 @@ class IncidentManager:
     def seconds_since_last_change(self) -> float:
         return self.clock() - self.last_change_at
 
-    # -- stuck_farm incident (emergency priority) ---------------------------
+    # -- emergency incidents (stuck_farm, auth_expired) ---------------------
 
     def evaluate_stuck_farm(
         self, active: bool, build_message: Callable[[], str]
     ) -> None:
-        incident = self.incidents.get(STUCK_FARM)
+        self._evaluate_emergency(STUCK_FARM, STUCK_FARM_TAG, active, build_message)
+
+    def evaluate_auth_expired(
+        self, active: bool, build_message: Callable[[], str]
+    ) -> None:
+        # Same emergency policy as stuck_farm (retry/expire/re-raise/re-arm):
+        # expired Buckler cookies are fully actionable and blind all monitoring
+        # until fixed. The only difference is the close signal — auth_expired
+        # closes on the first successful poll, which do_task drives via the
+        # active flag (review finding M3).
+        self._evaluate_emergency(AUTH_EXPIRED, AUTH_EXPIRED_TAG, active, build_message)
+
+    def _evaluate_emergency(
+        self, kind: str, tag: str, active: bool, build_message: Callable[[], str]
+    ) -> None:
+        incident = self.incidents.get(kind)
         if active:
             if incident is None:
-                self._open_stuck_farm(build_message)
+                self._open_emergency(kind, tag, build_message)
             else:
-                self._maintain_stuck_farm(incident, build_message)
+                self._maintain_emergency(kind, tag, incident, build_message)
         elif incident is not None:
-            self._close_stuck_farm(incident)
+            self._close_emergency(kind, incident)
 
-    def _send_emergency(self, message: str) -> str | None:
+    def _send_emergency(self, message: str, tag: str) -> str | None:
         return self.client.send(
             message,
             priority=2,
             retry=self.config.emergency_retry,
             expire=self.config.emergency_expire,
-            tags=STUCK_FARM_TAG,
+            tags=tag,
         )
 
-    def _open_stuck_farm(self, build_message: Callable[[], str]) -> None:
+    def _open_emergency(
+        self, kind: str, tag: str, build_message: Callable[[], str]
+    ) -> None:
         message = build_message()
         receipt: str | None = None
         if self.enabled:
-            receipt = self._send_emergency(message)
+            receipt = self._send_emergency(message, tag)
             if receipt is None:
-                logger.error("stuck_farm emergency send failed; will retry next poll.")
+                logger.error("%s emergency send failed; will retry next poll.", kind)
                 return
-        self.incidents[STUCK_FARM] = {
+        self.incidents[kind] = {
             "receipt": receipt,
             "opened_at": self.clock(),
             "expire": self.config.emergency_expire,
             "acked_at": 0,
         }
-        logger.warning("stuck_farm incident OPENED: %s", message)
+        logger.warning("%s incident OPENED: %s", kind, message)
         self._save()
 
-    def _maintain_stuck_farm(
-        self, incident: dict[str, Any], build_message: Callable[[], str]
+    def _maintain_emergency(
+        self,
+        kind: str,
+        tag: str,
+        incident: dict[str, Any],
+        build_message: Callable[[], str],
     ) -> None:
-        # Still stuck and already OPEN: send nothing unless a re-raise/re-arm
+        # Still active and already OPEN: send nothing unless a re-raise/re-arm
         # policy fires.
         if not self.enabled:
             # Pushover disabled: no receipt to inspect, nothing to send.
-            logger.debug("stuck_farm still active; Pushover disabled, staying silent.")
+            logger.debug("%s still active; Pushover disabled, staying silent.", kind)
             return
         if incident.get("receipt") is None:
             # The incident was opened while Pushover was disabled (an enabled
             # open with a failed send is never recorded), so it never paged
-            # anyone. Pushover is enabled now and the farm is still stuck: send
-            # the first real emergency alert and attach a receipt.
-            self._reraise_stuck_farm(
-                incident, build_message, "first alert after Pushover re-enabled"
+            # anyone. Pushover is enabled now and the condition is still active:
+            # send the first real emergency alert and attach a receipt (P2).
+            self._reraise_emergency(
+                kind,
+                tag,
+                incident,
+                build_message,
+                "first alert after Pushover re-enabled",
             )
             return
 
         now = self.clock()
         acked_at = incident.get("acked_at") or 0
         if acked_at:
-            # Re-arm after ack: an acknowledged-but-unrecovered farm is re-paged
-            # re_alert_after_ack seconds later (§4). 0 disables it.
+            # Re-arm after ack: an acknowledged-but-unrecovered incident is
+            # re-paged re_alert_after_ack seconds later (§4). 0 disables it.
             re_alert_after_ack = self.config.re_alert_after_ack
             if re_alert_after_ack > 0 and now - acked_at >= re_alert_after_ack:
-                self._reraise_stuck_farm(incident, build_message, "re-arm after ack")
+                self._reraise_emergency(
+                    kind, tag, incident, build_message, "re-arm after ack"
+                )
             return
 
         # Not yet acknowledged: poll the receipt. A failed check is "no new
@@ -231,8 +269,9 @@ class IncidentManager:
         if info.get("acknowledged") == 1:
             incident["acked_at"] = info.get("acknowledged_at") or now
             logger.info(
-                "stuck_farm alert acknowledged; re-arm timer started "
-                "(still OPEN until recovery is observed)."
+                "%s alert acknowledged; re-arm timer started "
+                "(still OPEN until recovery is observed).",
+                kind,
             )
             self._save()
             return
@@ -240,25 +279,30 @@ class IncidentManager:
         # Un-acknowledged: re-raise once the alert has expired locally
         # (expires_at = opened_at + expire), per §4.
         if now >= incident["opened_at"] + incident["expire"]:
-            self._reraise_stuck_farm(
-                incident, build_message, "re-raise on un-acked expiry"
+            self._reraise_emergency(
+                kind, tag, incident, build_message, "re-raise on un-acked expiry"
             )
 
-    def _reraise_stuck_farm(
-        self, incident: dict[str, Any], build_message: Callable[[], str], reason: str
+    def _reraise_emergency(
+        self,
+        kind: str,
+        tag: str,
+        incident: dict[str, Any],
+        build_message: Callable[[], str],
+        reason: str,
     ) -> None:
-        receipt = self._send_emergency(build_message())
+        receipt = self._send_emergency(build_message(), tag)
         if receipt is None:
-            logger.error("stuck_farm %s send failed; will retry next poll.", reason)
+            logger.error("%s %s send failed; will retry next poll.", kind, reason)
             return
         incident["receipt"] = receipt
         incident["opened_at"] = self.clock()
         incident["expire"] = self.config.emergency_expire
         incident["acked_at"] = 0
-        logger.warning("stuck_farm incident %s; fresh emergency alert sent.", reason)
+        logger.warning("%s incident %s; fresh emergency alert sent.", kind, reason)
         self._save()
 
-    def _close_stuck_farm(self, incident: dict[str, Any]) -> None:
+    def _close_emergency(self, kind: str, incident: dict[str, Any]) -> None:
         receipt = incident.get("receipt")
         if self.enabled and receipt is not None:
             if not self.client.cancel(receipt):
@@ -266,11 +310,12 @@ class IncidentManager:
                 # cost of a failed cancel is continued nagging until ack/expire.
                 self.pending_cancel.append(receipt)
                 logger.warning(
-                    "stuck_farm recovery: receipt cancel failed; "
-                    "will retry cancel next poll."
+                    "%s recovery: receipt cancel failed; "
+                    "will retry cancel next poll.",
+                    kind,
                 )
-        del self.incidents[STUCK_FARM]
-        logger.info("stuck_farm incident CLOSED (recovery observed).")
+        del self.incidents[kind]
+        logger.info("%s incident CLOSED (recovery observed).", kind)
         self._save()
 
     # -- api_down incident (one-shot, high priority) ------------------------
