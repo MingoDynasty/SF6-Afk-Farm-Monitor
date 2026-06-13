@@ -248,6 +248,10 @@ class IncidentManager:
                 SWAP_NEEDED_TAG,
                 lambda: build_message(finished),
                 extra={"character": finished},
+                # The 100-crossing is an edge: if the open send fails it cannot
+                # be retried next poll, so record a receipt-less incident and let
+                # _maintain_emergency page on the next poll (P1).
+                record_on_send_failure=True,
             )
 
     def _evaluate_emergency(
@@ -289,14 +293,28 @@ class IncidentManager:
         tag: str,
         build_message: Callable[[], str],
         extra: dict[str, Any] | None = None,
+        record_on_send_failure: bool = False,
     ) -> None:
         message = build_message()
         receipt: str | None = None
         if self.enabled:
             receipt = self._send_emergency(kind, message, tag)
-            if receipt is None:
+            if receipt is None and not record_on_send_failure:
+                # Level-triggered incidents (stuck_farm, auth_expired) recover a
+                # failed open for free: the condition is still active next poll,
+                # so the open is simply retried. Record nothing now.
                 logger.error("%s emergency send failed; will retry next poll.", kind)
                 return
+            if receipt is None:
+                # Edge-triggered incidents (swap_needed) have no next-poll edge
+                # to retry on — the crossing is gone once do_task writes the new
+                # count — so record a receipt-less incident. _maintain_emergency
+                # sends the first real alert on the next poll instead (P1).
+                logger.error(
+                    "%s emergency send failed; recorded without a receipt, "
+                    "will send on the next poll.",
+                    kind,
+                )
         incident: dict[str, Any] = {
             "receipt": receipt,
             "opened_at": self.clock(),
@@ -323,16 +341,17 @@ class IncidentManager:
             logger.debug("%s still active; Pushover disabled, staying silent.", kind)
             return
         if incident.get("receipt") is None:
-            # The incident was opened while Pushover was disabled (an enabled
-            # open with a failed send is never recorded), so it never paged
-            # anyone. Pushover is enabled now and the condition is still active:
-            # send the first real emergency alert and attach a receipt (P2).
+            # A receipt-less incident never paged anyone — it was opened either
+            # while Pushover was disabled (now re-enabled, P2) or, for the
+            # edge-triggered swap_needed, after a failed open send that was
+            # recorded anyway (P1). Pushover is enabled and the condition still
+            # holds, so send the first real emergency alert and attach a receipt.
             self._reraise_emergency(
                 kind,
                 tag,
                 incident,
                 build_message,
-                "first alert after Pushover re-enabled",
+                "first alert for a receipt-less incident",
             )
             return
 

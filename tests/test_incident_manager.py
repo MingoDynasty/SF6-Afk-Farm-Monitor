@@ -422,6 +422,102 @@ def test_swap_needed_crossing_while_closing_opens_new_incident(
     assert "Cammy" in fake_client.sent[1]["message"]
 
 
+class FlakyPushoverClient(FakePushoverClient):
+    """A fake client whose next ``send`` can be forced to fail (return None)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_send = False
+
+    def send(self, *args: object, **kwargs: object) -> str | None:
+        if self.fail_next_send:
+            self.fail_next_send = False
+            return None
+        return super().send(*args, **kwargs)  # type: ignore[arg-type]
+
+
+def test_swap_open_send_failure_records_receiptless_then_sends_next_poll(
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    # Regression: swap is the only edge-triggered open, so a failed first send
+    # has no next-poll crossing to retry on. It must be recorded receipt-less so
+    # _maintain_emergency pages on the next poll instead of losing the alert.
+    client = FlakyPushoverClient()
+    manager = IncidentManager(
+        client, make_config(), tmp_path / "state.json", clock=fake_clock
+    )
+
+    client.fail_next_send = True
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+
+    # The open send failed, but the incident is recorded (not dropped).
+    assert SWAP_NEEDED in manager.incidents
+    assert manager.incidents[SWAP_NEEDED]["receipt"] is None
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
+    assert client.sent == []
+
+    # Next poll: same character still gaining, no new crossing — the only path
+    # back to an alert is _maintain_emergency. The first real alert goes out.
+    fake_clock.advance(60)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=[],
+        build_message=swap_message,
+    )
+
+    assert manager.incidents[SWAP_NEEDED]["receipt"] is not None
+    assert len(client.sent) == 1
+    assert client.sent[0]["priority"] == 2
+
+
+def test_swap_close_then_open_send_failure_is_recorded_receiptless(
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    # The close-then-open path must also survive a failed open send: closing the
+    # finished incident and then failing to open the newly crossed character
+    # must still record the new incident receipt-less, not lose the crossing.
+    client = FlakyPushoverClient()
+    manager = IncidentManager(
+        client, make_config(), tmp_path / "state.json", clock=fake_clock
+    )
+
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    juri_receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # Cammy 99->100 closes Juri and opens Cammy, but the Cammy open send fails.
+    client.fail_next_send = True
+    manager.evaluate_swap_needed(
+        increased_characters=["Cammy"],
+        crossed_characters=["Cammy"],
+        build_message=swap_message,
+    )
+
+    assert client.cancelled == [juri_receipt]
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert manager.incidents[SWAP_NEEDED]["receipt"] is None
+
+    # Next poll: Cammy still gaining -> the first real alert for Cammy goes out.
+    fake_clock.advance(60)
+    manager.evaluate_swap_needed(
+        increased_characters=["Cammy"],
+        crossed_characters=[],
+        build_message=swap_message,
+    )
+    assert manager.incidents[SWAP_NEEDED]["receipt"] is not None
+
+
 def test_swap_needed_re_arm_fires_after_ack_like_stuck_farm(
     fake_client: FakePushoverClient,
     fake_clock: FakeClock,
