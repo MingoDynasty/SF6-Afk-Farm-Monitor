@@ -41,6 +41,14 @@ NOTIFICATION_STATE_FILE = DATA_DIR / "notification_state.json"
 # threshold to decide a swap is needed).
 FINISHED_THRESHOLD = 100
 
+# Character-select pseudo-entries that are not Master-color farm targets and so
+# must not appear in the table or the finished tally. "Random" has no completion
+# target, so counting it would permanently undercount "N / total finished". The
+# monitor already drops "Any" before writing database.json, so it never reaches
+# this reader in practice; it is listed here for clarity and to stay correct if
+# the page is ever pointed at a raw/hand-edited file.
+NON_FARMABLE_CHARACTERS = frozenset({"Any", "Random"})
+
 # Health states derived from the open incidents in notification_state.json.
 # Ordered most-severe first: AUTH_EXPIRED and API_DOWN both blind monitoring;
 # STUCK means the farm stalled. swap_needed / low_quota are not health states
@@ -82,6 +90,8 @@ def _build_character_rows(database: Any) -> list[dict[str, Any]]:
         return []
     rows: list[dict[str, Any]] = []
     for name, count in database.items():
+        if name in NON_FARMABLE_CHARACTERS:
+            continue
         try:
             battle_count = int(count)
         except TypeError, ValueError:  # PEP 758 multi-except (Python 3.14 target)

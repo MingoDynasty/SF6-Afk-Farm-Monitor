@@ -68,6 +68,18 @@ def test_invalid_battle_count_row_is_skipped() -> None:
     assert [row["name"] for row in status["characters"]] == ["Ken"]
 
 
+def test_non_farmable_characters_excluded_from_rows_and_tally() -> None:
+    # "Random" has no Master-color target, so it must not appear in the table
+    # or inflate the denominator. "Any" never reaches the file (the monitor
+    # strips it) but is excluded defensively the same way.
+    database = {"Random": 0, "Any": 5, "Ken": 16, "Luke": 106}
+    status = build_status(database, _state(), NOW)
+    names = [row["name"] for row in status["characters"]]
+    assert names == ["Ken", "Luke"]
+    assert status["total_count"] == 2
+    assert status["finished_count"] == 1
+
+
 # -- health derivation -------------------------------------------------------
 
 
