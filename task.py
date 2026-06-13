@@ -17,6 +17,18 @@ logger = logging.getLogger(__name__)
 
 DATABASE_FILENAME = DATA_DIR / "database.json"
 
+# A character's Master color reward completes at 100 battles; crossing this
+# threshold is what opens a swap_needed incident. The status page uses the same
+# number for its finished/progress display (status_server.FINISHED_THRESHOLD).
+MASTER_COLOR_THRESHOLD = 100
+
+# "Any" is the Buckler "all characters" aggregate row, not a real character, so
+# it must be filtered out of the per-character logic: its total is always large,
+# so left in it reads as a permanently-finished character that would prematurely
+# close swap incidents and open bogus ones. ("Random" is inert at ~0 and stays
+# in database.json; it is filtered only by the status-page view, by decision.)
+AGGREGATE_CHARACTER = "Any"
+
 AUTH_EXPIRED_MESSAGE = (
     "Buckler session expired — refresh buckler_id / buckler_r_id / "
     "buckler_praise_date in config.toml. All monitoring is blind until then."
@@ -108,7 +120,7 @@ def do_task(
 
     current_character_to_battle_count: dict[str, int] = {}
     for character_win_rate in win_rate_response.character_win_rates:
-        if character_win_rate.character_name == "Any":
+        if character_win_rate.character_name == AGGREGATE_CHARACTER:
             continue
         current_character_to_battle_count[character_win_rate.character_name] = (
             character_win_rate.battle_count
@@ -148,7 +160,7 @@ def do_task(
         )
         if current_battle_count > previous_battle_count:
             increased_characters.append(character)
-            if previous_battle_count < 100 <= current_battle_count:
+            if previous_battle_count < MASTER_COLOR_THRESHOLD <= current_battle_count:
                 logger.info("Finished Master color reward for character: %s", character)
                 crossed_threshold.append(character)
 
