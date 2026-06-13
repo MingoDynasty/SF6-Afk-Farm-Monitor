@@ -117,8 +117,19 @@ class IncidentManager:
             "Notification state was missing or corrupt; "
             "cancelling any dangling emergency retries by tag."
         )
-        if self.enabled:
-            self.client.cancel_by_tag(STUCK_FARM_TAG)
+        if self.enabled and not self.client.cancel_by_tag(STUCK_FARM_TAG):
+            # A transient failure here can leave server-side emergency retries
+            # dangling until ack/expire (bounded, self-healing). We do NOT park
+            # the tag for a later retry: tags are per-incident-kind and reused,
+            # so a deferred cancel_by_tag could cancel a *future* real
+            # incident's retries. Surface it instead. See
+            # docs/PR_REVIEW_PUSHBACK.md (P3).
+            logger.warning(
+                "cancel_by_tag(%s) failed during startup reconciliation; "
+                "any dangling emergency retries persist until acknowledged or "
+                "expired.",
+                STUCK_FARM_TAG,
+            )
         self._save()
 
     def retry_pending_cancels(self) -> None:
@@ -187,9 +198,19 @@ class IncidentManager:
         self, incident: dict[str, Any], build_message: Callable[[], str]
     ) -> None:
         # Still stuck and already OPEN: send nothing unless a re-raise/re-arm
-        # policy fires. With Pushover disabled there is no receipt to inspect.
-        if not self.enabled or incident.get("receipt") is None:
-            logger.debug("stuck_farm still active; incident OPEN, staying silent.")
+        # policy fires.
+        if not self.enabled:
+            # Pushover disabled: no receipt to inspect, nothing to send.
+            logger.debug("stuck_farm still active; Pushover disabled, staying silent.")
+            return
+        if incident.get("receipt") is None:
+            # The incident was opened while Pushover was disabled (an enabled
+            # open with a failed send is never recorded), so it never paged
+            # anyone. Pushover is enabled now and the farm is still stuck: send
+            # the first real emergency alert and attach a receipt.
+            self._reraise_stuck_farm(
+                incident, build_message, "first alert after Pushover re-enabled"
+            )
             return
 
         now = self.clock()

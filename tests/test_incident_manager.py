@@ -1,6 +1,9 @@
 import json
+import logging
 from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 from config import ConfigData
 from conftest import FakeClock, FakePushoverClient
@@ -360,6 +363,32 @@ def test_valid_state_file_does_not_reconcile(
     assert manager.last_change_at == 500.0
 
 
+def test_reconcile_logs_when_cancel_by_tag_fails(
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Review P3: a failed cancel_by_tag during reconciliation must be surfaced
+    # (not silently ignored), and reconciliation still completes.
+    class FailingTagClient(FakePushoverClient):
+        def cancel_by_tag(self, tag: str) -> bool:
+            self.cancelled_tags.append(tag)
+            return False
+
+    client = FailingTagClient()
+    state_path = tmp_path / "missing.json"  # missing => reconciliation runs
+
+    manager = IncidentManager(client, make_config(), state_path, clock=fake_clock)
+    with caplog.at_level(logging.WARNING):
+        manager.reconcile_on_startup()
+
+    assert client.cancelled_tags == [STUCK_FARM_TAG]
+    assert "cancel_by_tag" in caplog.text
+    # Reconciliation still completes: clean state is persisted.
+    assert state_path.exists()
+
+
 # -- persistence / crash recovery ---------------------------------------------
 
 
@@ -405,6 +434,42 @@ def test_disabled_pushover_still_transitions_without_network(
     manager.evaluate_stuck_farm(active=False, build_message=stuck_message)
     assert STUCK_FARM not in manager.incidents
     assert fake_client.cancelled == []
+
+
+def test_incident_opened_while_disabled_alerts_after_reenable(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    # Review P2: an incident opened while Pushover was disabled persists with
+    # receipt=None and never paged anyone. If the app restarts with Pushover
+    # enabled while the farm is still stuck, the first real emergency alert
+    # must go out.
+    state_path = tmp_path / "notification_state.json"
+    disabled = IncidentManager(
+        fake_client, make_config(pushover_enabled=False), state_path, clock=fake_clock
+    )
+    disabled.evaluate_stuck_farm(active=True, build_message=stuck_message)
+    assert disabled.incidents[STUCK_FARM]["receipt"] is None
+    assert fake_client.sent == []
+
+    # Restart with Pushover enabled; the open incident is reloaded from disk.
+    enabled = IncidentManager(
+        fake_client, make_config(pushover_enabled=True), state_path, clock=fake_clock
+    )
+    assert enabled.incidents[STUCK_FARM]["receipt"] is None
+
+    enabled.evaluate_stuck_farm(active=True, build_message=stuck_message)
+
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0]["priority"] == 2
+    assert fake_client.sent[0]["tags"] == STUCK_FARM_TAG
+    receipt = enabled.incidents[STUCK_FARM]["receipt"]
+    assert receipt is not None
+    # Persisted, so a later reload sees a real receipt (no longer silent).
+    reloaded = json.loads(state_path.read_text(encoding="utf-8"))
+    assert reloaded["incidents"][STUCK_FARM]["receipt"] == receipt
 
 
 # -- last_change_at stuck timer (replaces M10 mtime check) --------------------
