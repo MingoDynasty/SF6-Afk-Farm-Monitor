@@ -22,8 +22,6 @@ def get_character_win_rates(config: ConfigData) -> WinRateResponse:
         }
     )
     headers = {
-        "Host": "www.streetfighter.com",
-        "host": "www.streetfighter.com",
         "Accept": "*/*",
         "Cookie": f"buckler_id={config.buckler_id}; buckler_r_id={config.buckler_r_id}; buckler_praise_date={config.buckler_praise_date}",
         "Origin": "https://www.streetfighter.com",
@@ -33,7 +31,10 @@ def get_character_win_rates(config: ConfigData) -> WinRateResponse:
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
+        # Accept-Encoding deliberately left unset: no brotli/zstd decoder is
+        # installed, so let requests advertise only encodings it can decode
+        # (review finding M6). The Host header is also omitted — requests sets
+        # it correctly from the URL.
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": f"https://www.streetfighter.com/6/buckler/profile/{config.user_code}/play",
     }
