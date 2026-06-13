@@ -510,6 +510,7 @@ __marimo__/
 
 config.toml
 database.json
+notification_state.json
 response.json
 ignore/
 logs/

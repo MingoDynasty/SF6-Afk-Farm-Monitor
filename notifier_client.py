@@ -122,6 +122,13 @@ class PushoverClient:
             )
             return None
 
+        remaining = response.headers.get("X-Limit-App-Remaining")
+        if remaining is not None:
+            logger.info(
+                "Pushover monthly quota: %s messages remaining.",
+                remaining,
+            )
+
         try:
             response_json = response.json()
         except ValueError:

@@ -24,3 +24,16 @@ buckler_praise_date = 1234567890123
 pushover_enabled = true
 pushover_app_key = ""
 pushover_user_key = ""
+
+# Emergency-priority alert tuning (stuck-farm incidents)
+# How often (in seconds) Pushover re-delivers an unacknowledged emergency alert.
+# Minimum 30 per the Pushover API; 120 favors coverage over intensity.
+emergency_retry = 120  # 2 minutes
+
+# How long (in seconds) Pushover keeps re-delivering before the alert expires.
+# Maximum (and default) is 10800 = 3 hours.
+emergency_expire = 10800  # 3 hours
+
+# After you acknowledge a stuck-farm alert that hasn't actually recovered yet,
+# re-alert this many seconds later (an on-call style ack timeout). Set 0 to disable.
+re_alert_after_ack = 600  # 10 minutes

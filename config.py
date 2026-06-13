@@ -24,6 +24,10 @@ class ConfigData:
     pushover_enabled: bool
     pushover_app_key: str
     pushover_user_key: str
+    # Emergency-priority alert tuning (see ALERT_DEDUPLICATION_PROPOSAL.md §4, §8).
+    emergency_retry: int = 120
+    emergency_expire: int = 10800
+    re_alert_after_ack: int = 600
 
 
 def load_config(config_file: str | Path = CONFIG_FILE) -> ConfigData:
