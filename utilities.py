@@ -1,14 +1,5 @@
 import json
-import os
-from datetime import datetime, timedelta
 from pathlib import Path
-
-
-def get_duration_since_file_modified(filename: str | Path) -> timedelta:
-    modified_time = os.path.getmtime(filename)
-    datetime_object = datetime.fromtimestamp(modified_time)
-    duration = datetime.now() - datetime_object
-    return duration
 
 
 def sort_database_by_value(database_filename: str | Path) -> None:
