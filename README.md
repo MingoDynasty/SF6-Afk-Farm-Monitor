@@ -13,9 +13,13 @@ conditions are met, then a notification is sent via Pushover.
 1. Make a copy of the `example.toml`. Name the new file `config.toml`.
 2. Inside `config.toml`, update the following variables:
     1. user_code
-    2. buckler_id, buckler_r_id, buckler_praise_date
-    3. pushover_app_key, pushover_user_key
+    2. target_season_id
+    3. buckler_id, buckler_r_id, buckler_praise_date
+    4. pushover_app_key, pushover_user_key
 3. Feel free to change any other settings inside the TOML file, or leave them at their defaults.
+
+`target_season_id` is the Buckler season to query. Update it when Capcom starts recording battle counts under a new
+season.
 
 ## Getting Buckler Variables
 

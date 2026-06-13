@@ -2,9 +2,9 @@ import logging
 from typing import Any
 from urllib.parse import quote
 
-import requests  # type: ignore[import-untyped]
+import requests
 
-from config import config
+from config import ConfigData
 
 logger = logging.getLogger(__name__)
 
@@ -157,14 +157,8 @@ class PushoverClient:
         return response_json
 
 
-pushover_client = (
-    PushoverClient(config.pushover_app_key, config.pushover_user_key)
-    if config.pushover_enabled
-    else None
-)
-
-
-def send_message(message: str) -> None:
-    if pushover_client is None:
+def send_message(message: str, config: ConfigData) -> None:
+    if not config.pushover_enabled:
         return
+    pushover_client = PushoverClient(config.pushover_app_key, config.pushover_user_key)
     pushover_client.send(message)

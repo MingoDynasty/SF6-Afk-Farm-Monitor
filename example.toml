@@ -5,6 +5,9 @@
 # User code of the CFN profile to monitor
 user_code = 1234567890
 
+# Buckler season ID to query
+target_season_id = 12
+
 # How often to poll for updates (in seconds)
 # Caution: more frequent polling might result in CFN throttling your Buckler ID
 polling_interval = 60  # 1 minute
