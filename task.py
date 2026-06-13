@@ -1,5 +1,5 @@
 import json
-import logging.config
+import logging
 import os
 from collections.abc import Mapping
 from datetime import timedelta

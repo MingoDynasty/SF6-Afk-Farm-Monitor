@@ -1,4 +1,4 @@
-import logging.config
+import logging
 import sys
 import time
 from logging.handlers import RotatingFileHandler
