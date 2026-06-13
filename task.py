@@ -1,7 +1,6 @@
 import json
 import logging.config
 import os
-from collections import deque
 from collections.abc import Mapping
 from datetime import timedelta
 from pathlib import Path
@@ -13,7 +12,6 @@ from sortedcontainers import SortedDict  # type: ignore[import-untyped]
 from api_service import AuthExpiredError, get_character_win_rates
 from config import ConfigData
 from incident_manager import IncidentManager
-from notifier_client import send_message
 from paths import DATA_DIR
 from utilities import truncated_database
 
@@ -25,8 +23,6 @@ AUTH_EXPIRED_MESSAGE = (
     "Buckler session expired — refresh buckler_id / buckler_r_id / "
     "buckler_praise_date in config.toml. All monitoring is blind until then."
 )
-
-notifications_to_send: deque[str] = deque()
 
 
 def write_to_database(
@@ -136,6 +132,8 @@ def do_task(
         return
 
     data_differs = False
+    increased_characters: list[str] = []
+    crossed_threshold: list[str] = []
     for character, current_battle_count in current_character_to_battle_count.items():
         if character not in previous_character_to_battle_count:
             logger.warning("Found a new character: %s", character)
@@ -151,10 +149,11 @@ def do_task(
             previous_battle_count,
             current_battle_count,
         )
-        if current_battle_count >= 100:
-            message = f"Finished Master color reward for character: {character}"
-            logger.info(message)
-            notifications_to_send.append(message)
+        if current_battle_count > previous_battle_count:
+            increased_characters.append(character)
+            if previous_battle_count < 100 <= current_battle_count:
+                logger.info("Finished Master color reward for character: %s", character)
+                crossed_threshold.append(character)
 
     # Update database with current data. last_change_at (owned by the incident
     # manager) is the stuck-timer source, replacing the database.json mtime
@@ -173,6 +172,17 @@ def do_task(
         active=stuck, build_message=build_stuck_message
     )
 
-    while len(notifications_to_send) > 0:
-        message = notifications_to_send.popleft()
-        send_message(message, config)
+    # Master-color swap incident (§7): a character crossing 100 opens an
+    # emergency incident that nags until a *different* character starts gaining
+    # counts (the swap happened). Replaces the per-match re-fire from ffb650b.
+    def build_swap_message(character: str) -> str:
+        return (
+            f"Finished Master color reward for character: {character}. "
+            "Swap to a different character to keep earning rewards."
+        )
+
+    incident_manager.evaluate_swap_needed(
+        increased_characters=increased_characters,
+        crossed_characters=crossed_threshold,
+        build_message=build_swap_message,
+    )

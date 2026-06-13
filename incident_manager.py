@@ -30,8 +30,10 @@ NOTIFICATION_STATE_FILENAME = DATA_DIR / "notification_state.json"
 STUCK_FARM = "stuck_farm"
 API_DOWN = "api_down"
 AUTH_EXPIRED = "auth_expired"
+SWAP_NEEDED = "swap_needed"
 STUCK_FARM_TAG = "sf6mon-stuck_farm"
 AUTH_EXPIRED_TAG = "sf6mon-auth_expired"
+SWAP_NEEDED_TAG = "sf6mon-swap_needed"
 
 # Emergency incident types share one state machine (open / maintain / re-raise /
 # re-arm / close on observed recovery); each carries its own Pushover tag so
@@ -39,6 +41,7 @@ AUTH_EXPIRED_TAG = "sf6mon-auth_expired"
 EMERGENCY_TAGS = {
     STUCK_FARM: STUCK_FARM_TAG,
     AUTH_EXPIRED: AUTH_EXPIRED_TAG,
+    SWAP_NEEDED: SWAP_NEEDED_TAG,
 }
 
 
@@ -182,6 +185,43 @@ class IncidentManager:
         # active flag (review finding M3).
         self._evaluate_emergency(AUTH_EXPIRED, AUTH_EXPIRED_TAG, active, build_message)
 
+    def evaluate_swap_needed(
+        self,
+        increased_characters: list[str],
+        crossed_characters: list[str],
+        build_message: Callable[[str], str],
+    ) -> None:
+        # Master-color swap incident (§7), replacing the per-match re-fire from
+        # commit ffb650b. Emergency policy identical to stuck_farm; the only
+        # differences are the open and close signals:
+        #   open  = a character's count crosses 100 this poll
+        #   close = a *different* character's count starts increasing (the user
+        #           actually swapped). Continued matches on the finished
+        #           character keep the incident OPEN and silent (modulo re-arm).
+        incident = self.incidents.get(SWAP_NEEDED)
+        if incident is None:
+            if crossed_characters:
+                finished = crossed_characters[0]
+                self._open_emergency(
+                    SWAP_NEEDED,
+                    SWAP_NEEDED_TAG,
+                    lambda: build_message(finished),
+                    extra={"character": finished},
+                )
+            return
+
+        # Always present: set via ``extra`` when the swap incident is opened.
+        finished = incident["character"]
+        if any(character != finished for character in increased_characters):
+            self._close_emergency(SWAP_NEEDED, incident)
+        else:
+            self._maintain_emergency(
+                SWAP_NEEDED,
+                SWAP_NEEDED_TAG,
+                incident,
+                lambda: build_message(finished),
+            )
+
     def _evaluate_emergency(
         self, kind: str, tag: str, active: bool, build_message: Callable[[], str]
     ) -> None:
@@ -204,7 +244,11 @@ class IncidentManager:
         )
 
     def _open_emergency(
-        self, kind: str, tag: str, build_message: Callable[[], str]
+        self,
+        kind: str,
+        tag: str,
+        build_message: Callable[[], str],
+        extra: dict[str, Any] | None = None,
     ) -> None:
         message = build_message()
         receipt: str | None = None
@@ -213,12 +257,15 @@ class IncidentManager:
             if receipt is None:
                 logger.error("%s emergency send failed; will retry next poll.", kind)
                 return
-        self.incidents[kind] = {
+        incident: dict[str, Any] = {
             "receipt": receipt,
             "opened_at": self.clock(),
             "expire": self.config.emergency_expire,
             "acked_at": 0,
         }
+        if extra:
+            incident.update(extra)
+        self.incidents[kind] = incident
         logger.warning("%s incident OPENED: %s", kind, message)
         self._save()
 
