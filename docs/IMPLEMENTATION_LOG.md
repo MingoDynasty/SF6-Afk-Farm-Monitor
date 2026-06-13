@@ -34,7 +34,28 @@ authoritative work order), `ALERT_DEDUPLICATION_PROPOSAL.md`, and
 | 6 | M3 (auth-expiry incident), M6 (Accept-Encoding), M7 (log rotation), M8 (absolute paths + `data/` move per addendum), M9 cleanup + `.gitignore` | done | `93d8edb`, `eb503d7`, `2a6d6f2`, `7efab14`, `1a157a4` | M3 `auth_expired` emergency incident (shares stuck_farm's policy; closes on first good poll); M6 drops `Accept-Encoding` + `Host`/`host`; M7 `RotatingFileHandler` (info 2 MB×3, debug 5 MB×5); M8 `paths.py` anchors config/data/logs to `BASE_DIR`, state files moved to `data/`; M9 `response.json` dump replaced by failure-path DEBUG body logging. |
 | 7 | Dedup phase 2: Master-color swap incident, quota self-alert, sounds/url polish, README DND note | done | `49a267c`, `4bf445c`, `af2ca1a`, `f839e35` | `swap_needed` emergency incident (opens on 100-crossing, closes when a *different* character gains; replaces ffb650b re-fire); `low_quota` one-shot priority=1 below 500, silent close on monthly reset; per-type sounds (siren/magic/falling) + Buckler deep-link on stuck_farm/swap_needed + detection `timestamp` on all incident sends; README swap section + generalized DND note (the §5 DND note itself already shipped in session 3). |
 | 8 | Status page per `STATUS_PAGE_PROPOSAL.md` | done | `ab49e88`, `361c77e`, `33ffb00` | Separate read-only `status_server.py` (stdlib `ThreadingHTTPServer`, zero new deps): `GET /api/status` (unfinished-first table, finished tally, humanized staleness, health from open incidents) + `GET /` self-contained HTML (inline CSS/JS, 30 s polling). New `status_page_port` config key (default 8675, absent-tolerant). Binds 0.0.0.0. Never imports monitor task/scheduler code; serves only `data/` files. |
-| 9 | Remaining L items (opportunistic); Glances stays shelved | todo | — | From PR #1 review: `REQUEST_TIMEOUT = (10, 30)` is duplicated in `api_service.py:12` and `notifier_client.py:12`; consolidate if a shared constants home appears. **Authorized 2026-06-13 (Session 6 Q&A):** the user confirmed the status page replaces the `shortened.json` workflow, so the proposal §5 retirement (`truncated_database` / `sort_database_by_value` / `shortened.json` / `sorted_by_value.json`) is now in scope here. |
+| 9 | Remaining L items (opportunistic); Glances stays shelved | done | `f751038`, `f2dfb21`, `2bf706e`, `824f3d5`, `31fc218`, `8c5bcca`, `af97170` | L12 unused `import logging.config`; L8 dropped `sortedcontainers` (plain dict + `json.dumps(sort_keys=True)`; removes the last `type: ignore`); L9 retired `utilities.py` + the `shortened.json`/`sorted_by_value.json` report (single artifact `data/database.json`); L7 named constants `MASTER_COLOR_THRESHOLD` + `AGGREGATE_CHARACTER` (Random kept **view-only** per 2026-06-13 decision); L4 pydantic field constraints; L11 return hints on `app.main`/`run_task_safely`; L18 README cookie-refresh + `data/` layout. L14 was already satisfied (every file open carries `encoding=`). `REQUEST_TIMEOUT` left duplicated (no sensible shared home). L16/L17 out of scope (noted below). |
+
+## Roadmap complete (2026-06-13)
+
+All nine roadmap steps are `done`. `data/database.json` is the single state
+artifact; the alert-dedup state machine, auth/quota/swap incidents, log
+rotation, absolute paths, the read-only status page, and the L-item cleanup
+have all landed with tests (93 passing) and clean Black/mypy.
+
+**Remaining known debt (deliberately out of scope, for a future decision):**
+- **L16 — plaintext secrets in `config.toml`** (Buckler session cookies +
+  Pushover keys). Accepted for a personal single-machine tool (open-question 4);
+  gitignored, and H4 no longer copies them into logs. Env vars / OS keyring
+  would be stronger if this ever runs for other users.
+- **L17 — the monitor cannot report its own death.** After the crash-path fixes
+  it no longer dies silently *from these bugs*, but a supervisor with
+  auto-restart (Windows Scheduled Task / NSSM) and/or a dead-man-switch
+  heartbeat (e.g. healthchecks.io ping per successful poll) is still the right
+  production-hardening step. Not attempted.
+- **`REQUEST_TIMEOUT = (10, 30)`** stays duplicated in `api_service.py` and
+  `notifier_client.py` — see the Session 7 decision below.
+- **Glances** (`GLANCES_PROPOSAL.md`) remains shelved.
 
 ## Session log
 
@@ -47,6 +68,25 @@ authoritative work order), `ALERT_DEDUPLICATION_PROPOSAL.md`, and
 - **Not done / carried over:** <anything in scope but unfinished, and why>
 - **Decisions made in-session:** <small calls not covered by the docs>
 -->
+
+### 2026-06-13 — Session 7: roadmap step 9 (remaining Low-severity cleanup)
+- **Branch / commits:** `roadmap-step-9`; `f751038` L12 drop unused `import logging.config`, `f2dfb21` L8 drop sortedcontainers, `2bf706e` L9 retire utilities.py + shortened.json, `824f3d5` L7 named constants, `31fc218` L4 pydantic field constraints, `8c5bcca` L11 return hints, `af97170` L18 README
+- **Done:**
+  - **L12** (`app.py`, `task.py`): both imported `logging.config` but use only `logging`; switched to `import logging`.
+  - **L8** (`task.py`, `pyproject.toml`, `uv.lock`): dropped `sortedcontainers`. `do_task` builds a plain `dict[str, int]`; `write_to_database` now dumps with `json.dumps(..., indent=2, sort_keys=True)`, which produces byte-identical alphabetical output to the old `SortedDict`. Removed the dependency from `pyproject.toml` and regenerated `uv.lock` (`uv lock` → "Removed sortedcontainers"). This also removed the lone `# type: ignore[import-untyped]` (no stubs exist for it). New test `test_write_to_database_sorts_keys_alphabetically` feeds non-alphabetical insertion order and asserts the on-disk key order is sorted.
+  - **L9** (`task.py`, deleted `utilities.py`): retired the `shortened.json` workflow entirely (authorized 2026-06-13, STATUS_PAGE_PROPOSAL.md §5). Removed the `from utilities import truncated_database` import, the `truncated_database(...)` call, and the dead `# sort_database_by_value(...)` comment from `write_to_database`; deleted `utilities.py` (no functions remained). Deleted the local `data/shortened.json` artifact (`data/sorted_by_value.json` did not exist — `sort_database_by_value` was dead and only ever wrote to CWD). `data/database.json` is now the single state artifact. No committed mypy/lint config exists, so "drop utilities.py from the mypy file list" just means the verified-by command below no longer passes it.
+  - **L7** (`task.py`): hoisted the magic `100` to `MASTER_COLOR_THRESHOLD` and the `"Any"` filter string to `AGGREGATE_CHARACTER`, and added the previously-missing comment explaining that `"Any"` is the Buckler all-characters aggregate row that must stay filtered from the per-character logic. **Behavior unchanged.** Per the in-session decision (below) **no source-side `"Random"` filter was added** — it stays view-only in `status_server.py`.
+  - **L4** (`config.py`, new `tests/test_config.py`): added pydantic field constraints via `Annotated[int, Field(...)]` — `polling_interval`/`battle_count_timeout` `gt=0`, `emergency_retry` `ge=30` (Pushover minimum), `emergency_expire` `gt=0, le=10800`, `re_alert_after_ack` `ge=0` (preserves the documented "0 disables"). `example.toml` already documented these bounds in comments, so it needed no change. New tests cover acceptance, the 7 out-of-range rejections, and `re_alert_after_ack=0` staying valid.
+  - **L11** (`app.py`): added `-> None` to `main` and `run_task_safely` — the only remaining untyped production functions (the other L11 offenders, `utilities.py` and `get_character_win_rates`, were already gone/typed). Production modules now pass `mypy --disallow-untyped-defs --disallow-incomplete-defs`.
+  - **L18** (`README.md`): added a "Refreshing expired cookies" subsection tied to the `auth_expired` emergency alert (refresh the three Buckler cookies in `config.toml` and **restart**, since config is read once at startup) and a "Data and logs" section describing the `data/`/`logs/` layout. The "edit the season ID in source" guidance was **already gone** (the README documents `target_season_id` as config), so nothing stale remained to remove there.
+- **Verified by:** `uv run python -m black --check app.py api_service.py config.py model.py notifier_client.py task.py incident_manager.py paths.py status_server.py tests` (clean, 15 files); `uv run python -m mypy app.py api_service.py config.py model.py notifier_client.py task.py incident_manager.py paths.py status_server.py tests` → `Success: no issues found in 15 source files` (note: `utilities.py` dropped from this list); `uv run python -m pytest --basetemp .pytest_cache\tmp` → **93 passed** (was 83; +1 L8 sort test, +9 L4 config tests). Dependency removal: `uv lock` removed `sortedcontainers`, `uv lock --check` passes, `uv sync` audits clean, and `uv pip list` confirms `sortedcontainers` is absent while pydantic/requests/schedule/humanize remain. **Live run** (`ignore/verify_step9.py`, `pushover_enabled` forced `False` in memory, **temp `data/` paths** so the real state files were untouched): two real Buckler poll cycles end-to-end (first-init write + diff path) returned `CHARACTER_ROWS=31`, `KEYS_SORTED=True`, `ANY_FILTERED=True`, `SHORTENED_ABSENT=True` (no report file produced), `OPEN_INCIDENTS=[]` — a clean poll after the dependency/utilities removal.
+- **Not done / carried over (deliberate):** **L16** (plaintext secrets) and **L17** (supervisor/heartbeat) left untouched per the prompt — see the "Roadmap complete" note above. The **source-side `"Random"` filter** was *not* added (view-only, by decision). The **`REQUEST_TIMEOUT` duplication** was *not* consolidated (decision below). Glances stays shelved.
+- **Decisions made in-session:**
+  - **`"Random"` stays view-only (user decision, 2026-06-13).** Open-question 5 originally said "filter Random like Any," but PR #6 already filters both `"Any"` and `"Random"` in the status-page view, and `"Random"` is inert (~0) so it never triggers a swap/finished alarm in the monitor regardless. Asked whether to also add a source-side filter in `task.py`; the user chose to leave it view-only, so `task.py` still filters only `"Any"` and `database.json` keeps the inert `Random` row. (The parked "DB stores everything" inversion was not pursued, per the prompt.)
+  - **`REQUEST_TIMEOUT = (10, 30)` left duplicated** in `api_service.py` and `notifier_client.py`. The carry-over note said "consolidate *if* a sensible shared home now exists" — none does. The two are independent HTTP clients (Buckler vs Pushover); a new shared module (or a cross-import) for a single tuple is exactly the structure this removal-focused session is meant to avoid. Recorded as evaluated-and-left rather than fixed.
+  - **L4 scoped to the listed fields**, using `Annotated[int, Field(...)]` (no assignment-as-default, so required-field ordering is unaffected). `status_page_port`/`target_season_id`/identifiers were left unconstrained — not in the prompt's list, and a port range felt like scope creep for this pass.
+  - **L7 constant naming:** `MASTER_COLOR_THRESHOLD` (matches the review's "Master color battle-count threshold" wording; `status_server.py` uses its own `FINISHED_THRESHOLD` for the same 100 — the two processes are intentionally decoupled, so the small duplication is preferred over coupling them) and `AGGREGATE_CHARACTER`.
+- **Operational note (Windows venv / not a code issue):** I ran `uv sync --reinstall` to "verify from scratch" and it **broke the shared `.venv`** — it could not replace `pydantic_core`'s compiled `.pyd` because a running process (here, two `status_server.py` instances) held it open, and uv had already removed `pydantic_core/__init__.py` before aborting. Repair once the lock is released: `uv sync --reinstall-package pydantic-core`. **Lesson for future sessions:** on this machine, verify lockfile resolution with `uv lock --check` + a plain `uv sync`, **never `--reinstall`**, while the monitor or status page is running. No code/doc conflict — recorded here so the next reader doesn't repeat it.
 
 ### 2026-06-13 — Session 6: roadmap step 8 (local status page)
 - **Branch / commits:** `roadmap-step-8`; `ab49e88` server + /api/status, `361c77e` HTML view, `33ffb00` README section
@@ -142,8 +182,15 @@ authoritative work order), `ALERT_DEDUPLICATION_PROPOSAL.md`, and
 
 ## Deviations from the spec docs
 
-*(none yet — record any place the implementation intentionally differs from
-the docs, with rationale and author sign-off)*
+- **`"Random"` source-side filter not implemented (Session 7, 2026-06-13).**
+  CODEBASE_REVIEW.md open-question 5 resolved to "filter `Random` like `Any`,"
+  which read as a source-side (`task.py`) filter. Since then the step-8 status
+  page added a **view-layer** filter for both `"Any"` and `"Random"`
+  (`NON_FARMABLE_CHARACTERS`, PR #6), and `"Random"` is inert (~0) so it never
+  triggers a monitor alarm. Asked the author whether to also filter it at the
+  source; **author chose view-only** (sign-off 2026-06-13). `task.py` therefore
+  still filters only `"Any"`, and `database.json` retains the inert `Random`
+  row. Not a doc/code conflict — an authorized refinement of the prior decision.
 
 ## Doc corrections discovered
 
