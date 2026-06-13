@@ -7,11 +7,12 @@ request (both are tiny, so there is no caching) and renders the current farm
 state. Because it only reads those two files, it can crash, hang, or be absent
 with zero effect on monitoring (STATUS_PAGE_PROPOSAL.md §3).
 
-Endpoint:
+It serves two endpoints:
 
 - ``GET /api/status`` — the assembled state as JSON.
-
-(``GET /`` serves the HTML view; added in the next commit.)
+- ``GET /`` — a single self-contained HTML page (inline CSS/JS) that re-fetches
+  ``/api/status`` every 30 s and renders the character table, finished tally,
+  staleness line, and health line. No build step, no framework.
 
 Security: the page is LAN-only by design, no auth (§5). It serves *only* the
 two ``data/`` files; it never exposes ``config.toml`` contents. ``load_config``
@@ -177,15 +178,141 @@ def build_status(database: Any, state: Any, now: float) -> dict[str, Any]:
     }
 
 
+# Single self-contained page. Vanilla JS re-fetches /api/status every 30 s and
+# re-renders; character names are written via textContent (never innerHTML), so
+# nothing from the data files can inject markup. Kept ASCII-only (the checkmark
+# is a CSS \2713 escape) so the source has no encoding surprises.
+PAGE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SF6 Afk Farm Monitor</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+         margin: 0; background: #f4f5f7; color: #1a1a1a; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { font-size: 1.3rem; margin: 0 0 0.75rem; }
+  .health { display: inline-block; font-weight: 600; padding: 0.35rem 0.8rem;
+            border-radius: 999px; font-size: 0.95rem; }
+  .health.ok { background: #e6f4ea; color: #1e7e34; }
+  .health.stuck { background: #fff4e5; color: #a15c00; }
+  .health.down, .health.auth { background: #fdecea; color: #b71c1c; }
+  .health.unknown { background: #eceff1; color: #546e7a; }
+  .meta { color: #555; font-size: 0.9rem; margin: 0.4rem 0 0; }
+  table { width: 100%; border-collapse: collapse; margin-top: 1.1rem; }
+  th { text-align: left; font-size: 0.8rem; text-transform: uppercase;
+       letter-spacing: 0.03em; color: #777; border-bottom: 1px solid #ddd;
+       padding: 0 0.5rem 0.4rem; }
+  td { padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; }
+  td.bar-cell { width: 55%; }
+  td.count { text-align: right; font-variant-numeric: tabular-nums;
+             white-space: nowrap; }
+  .bar { background: #e0e0e0; border-radius: 4px; height: 14px; overflow: hidden; }
+  .fill { height: 100%; background: #1976d2; transition: width 0.3s; }
+  tr.finished .fill { background: #2e7d32; }
+  tr.finished td.name::after { content: " \\2713"; color: #2e7d32; }
+  .footer { color: #999; font-size: 0.8rem; margin-top: 1.1rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SF6 Afk Farm Monitor</h1>
+  <div id="health" class="health unknown">Loading...</div>
+  <p class="meta" id="tally"></p>
+  <p class="meta" id="staleness"></p>
+  <table>
+    <thead><tr>
+      <th>Character</th><th class="bar-cell">Progress</th><th class="count">Battles</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p class="footer" id="footer"></p>
+</div>
+<script>
+const HEALTH_CLASS = { OK: "ok", STUCK: "stuck", API_DOWN: "down",
+                       AUTH_EXPIRED: "auth", UNKNOWN: "unknown" };
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/status", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    render(await res.json());
+  } catch (err) {
+    const health = document.getElementById("health");
+    health.className = "health down";
+    health.textContent = "Status unavailable";
+    document.getElementById("footer").textContent =
+      "Last fetch failed: " + err.message;
+  }
+}
+
+function render(data) {
+  const health = document.getElementById("health");
+  health.className = "health " + (HEALTH_CLASS[data.health.status] || "unknown");
+  health.textContent = data.health.label;
+
+  document.getElementById("tally").textContent =
+    data.finished_count + " / " + data.total_count + " characters finished";
+  document.getElementById("staleness").textContent =
+    "Last battle-count change: " +
+    (data.time_since_last_change || "unknown");
+
+  const rows = document.getElementById("rows");
+  rows.textContent = "";
+  for (const character of data.characters) {
+    const tr = document.createElement("tr");
+    if (character.finished) tr.className = "finished";
+
+    const name = document.createElement("td");
+    name.className = "name";
+    name.textContent = character.name;
+
+    const barCell = document.createElement("td");
+    barCell.className = "bar-cell";
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    const fill = document.createElement("div");
+    fill.className = "fill";
+    fill.style.width = character.progress + "%";
+    bar.appendChild(fill);
+    barCell.appendChild(bar);
+
+    const count = document.createElement("td");
+    count.className = "count";
+    count.textContent = character.battle_count;
+
+    tr.append(name, barCell, count);
+    rows.appendChild(tr);
+  }
+
+  document.getElementById("footer").textContent =
+    "Updated " + new Date().toLocaleTimeString() + " - refreshes every 30s";
+}
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
+"""
+PAGE_BYTES = PAGE_HTML.encode("utf-8")
+
+
 class StatusRequestHandler(BaseHTTPRequestHandler):
-    """Serves the status JSON and (added in the HTML-view commit) the page."""
+    """Serves the HTML status page and the status JSON."""
 
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
         route = self.path.split("?", 1)[0]
-        if route == "/api/status":
+        if route == "/":
+            self._serve_html()
+        elif route == "/api/status":
             self._serve_status_json()
         else:
             self._send_not_found()
+
+    def _serve_html(self) -> None:
+        self._send_bytes(200, "text/html; charset=utf-8", PAGE_BYTES)
 
     def _serve_status_json(self) -> None:
         database, state = load_status_data()
