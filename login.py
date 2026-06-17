@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import dataclasses
 import sys
+import tomllib
 from collections.abc import Callable, Iterator
 from http.cookies import Morsel
 import time
 from typing import Any, Optional, TextIO
+
+from pydantic import ValidationError
 
 from api_service import AuthExpiredError, get_character_win_rates
 from config import ConfigData, load_config, update_buckler_cookies
@@ -175,6 +178,19 @@ def main() -> int:
         print(
             "login: config.toml not found. Copy example.toml to config.toml and set "
             "user_code / target_season_id first, then re-run.",
+            file=sys.stderr,
+        )
+        return 1
+    except (ValidationError, tomllib.TOMLDecodeError) as error:
+        # login.py only needs user_code / target_season_id from config.toml; the
+        # cookie fields it is about to overwrite must still be present and the
+        # right shape for the file to load (buckler_praise_date is an int, so it
+        # cannot be left blank). Guide the user instead of dumping a traceback.
+        print(
+            "login: config.toml is invalid, so login cannot start. Set user_code and "
+            "target_season_id, and keep the buckler_* fields present with "
+            "buckler_praise_date numeric (the example.toml placeholders are fine). "
+            f"Then re-run.\n  details: {error}",
             file=sys.stderr,
         )
         return 1

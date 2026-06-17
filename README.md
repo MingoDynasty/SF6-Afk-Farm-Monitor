@@ -14,8 +14,8 @@ conditions are met, then a notification is sent via Pushover.
 2. Inside `config.toml`, update the following variables:
     1. user_code
     2. target_season_id
-    3. buckler_id, buckler_r_id, buckler_praise_date (or leave blank and fill them with `login.py` — see
-       [Getting Buckler Variables](#getting-buckler-variables))
+    3. buckler_id, buckler_r_id, buckler_praise_date (or keep the `example.toml` placeholders and fill them
+       with `login.py` — see [Getting Buckler Variables](#getting-buckler-variables))
     4. pushover_app_key, pushover_user_key
 3. Feel free to change any other settings inside the TOML file, or leave them at their defaults.
 
@@ -60,6 +60,10 @@ into the CFN website. There are two ways to get them into `config.toml`.
 uv sync --group login   # one-time: installs the embedded-browser dependency (pywebview)
 uv run python login.py
 ```
+
+This reads `config.toml`, so it must already exist with `user_code` and `target_season_id` set (copy `example.toml`
+first). Leave the three `buckler_*` values as the example placeholders — `login.py` overwrites them. In particular,
+keep `buckler_praise_date` numeric: blanking it fails config validation before the browser can open.
 
 A browser window opens at the CFN/Buckler site. Log in normally — Capcom ID, plus any MFA/captcha, are handled right
 there in the window. Once you're logged in, the window closes itself, the three cookies are verified against the real

@@ -8,6 +8,9 @@ webview backend returns, and classifying the verification probe — is.
 from collections.abc import Callable, Iterable
 from http.cookies import SimpleCookie
 
+import pytest
+
+import login
 from api_service import AuthExpiredError
 from config import ConfigData
 from login import extract_cookies, verify_cookies
@@ -92,3 +95,33 @@ def test_verify_cookies_unverified_on_other_error(
         raise RuntimeError("network down")
 
     assert verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher) == "unverified"
+
+
+def _fail_if_called(*args: object, **kwargs: object) -> None:
+    raise AssertionError("the browser must not open when config.toml is unusable")
+
+
+def test_main_missing_config_returns_1_without_opening_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_missing() -> ConfigData:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(login, "load_config", raise_missing)
+    monkeypatch.setattr(login, "capture_cookies", _fail_if_called)
+    assert login.main() == 1
+
+
+def test_main_invalid_config_returns_1_without_opening_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A blank/missing buckler_praise_date is the documented foot-gun: the int
+    # field fails validation, and login must report it rather than crash or open
+    # the browser.
+    def raise_invalid() -> ConfigData:
+        ConfigData()  # type: ignore[call-arg]  # missing required fields -> ValidationError
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(login, "load_config", raise_invalid)
+    monkeypatch.setattr(login, "capture_cookies", _fail_if_called)
+    assert login.main() == 1
