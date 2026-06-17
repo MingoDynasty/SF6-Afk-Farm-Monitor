@@ -23,12 +23,14 @@ at startup. See docs/LOGIN_CAPTURE_PROPOSAL.md for the full design.
 from __future__ import annotations
 
 import dataclasses
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 import sys
 import tomllib
 from collections.abc import Callable, Iterator
 from http.cookies import Morsel
 import time
-from typing import Any, Optional, TextIO
+from typing import Any, NamedTuple, Optional, TextIO
 
 from pydantic import ValidationError
 
@@ -78,16 +80,96 @@ def extract_cookies(cookies: Any) -> dict[str, str]:
     return found
 
 
+def _cookie_expiry(cookie_obj: Any) -> Optional[datetime]:
+    """Best-effort absolute expiry (UTC) of one cookie object, or None.
+
+    Handles an ``http.cookies.Morsel`` (``expires`` HTTP-date, else relative
+    ``max-age``) and an ``http.cookiejar.Cookie``-like object (``.expires`` as
+    epoch seconds). A pure session cookie (no expiry attribute) returns None.
+    """
+    if isinstance(cookie_obj, Morsel):
+        expires = cookie_obj.get("expires")
+        if expires:
+            try:
+                parsed = parsedate_to_datetime(expires)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed is not None:
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        max_age = cookie_obj.get("max-age")
+        if max_age:
+            try:
+                return datetime.now(timezone.utc) + timedelta(seconds=int(max_age))
+            except (TypeError, ValueError):
+                return None
+        return None
+    epoch = getattr(cookie_obj, "expires", None)
+    if epoch:
+        try:
+            return datetime.fromtimestamp(int(epoch), tz=timezone.utc)
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
+    return None
+
+
+def _iter_cookie_objects(cookies: Any) -> Iterator[tuple[str, Any]]:
+    """Like ``_iter_cookie_pairs`` but yields (name, cookie_object) so callers
+    can read per-cookie attributes such as expiry. A plain ``{name: value}``
+    dict carries no object to inspect, so its value is yielded as ``None``.
+    """
+    if isinstance(cookies, (Morsel, dict)):
+        cookies = [cookies]
+    for cookie in cookies or []:
+        if isinstance(cookie, Morsel):
+            yield cookie.key, cookie
+        elif isinstance(cookie, dict):
+            for name, value in cookie.items():
+                yield (value.key, value) if isinstance(value, Morsel) else (name, None)
+        else:
+            name = getattr(cookie, "name", None)
+            if name is not None:
+                yield name, cookie
+
+
+def earliest_target_expiry(cookies: Any) -> Optional[datetime]:
+    """Earliest absolute expiry (UTC) among the captured target cookies, or None.
+
+    The session dies when the first required cookie expires, so the earliest is
+    the one worth reporting.
+    """
+    expiries: list[datetime] = []
+    for name, obj in _iter_cookie_objects(cookies):
+        if name in TARGET_COOKIES and obj is not None:
+            expiry = _cookie_expiry(obj)
+            if expiry is not None:
+                expiries.append(expiry)
+    return min(expiries) if expiries else None
+
+
+def format_expiry(expiry: Optional[datetime]) -> str:
+    """Human description of a captured-cookie expiry for the console."""
+    if expiry is None:
+        return "unknown (this backend did not report a cookie expiry)"
+    days = (expiry - datetime.now(timezone.utc)).days
+    return f"{expiry:%Y-%m-%d %H:%M UTC} (~{days} days from now)"
+
+
+class CaptureResult(NamedTuple):
+    cookies: dict[str, str]
+    expiry: Optional[datetime]  # earliest absolute expiry of the captured cookies (UTC)
+
+
 def capture_cookies(
     *,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     start_url: str = START_URL,
     message_stream: TextIO = sys.stderr,
-) -> Optional[dict[str, str]]:
+) -> Optional[CaptureResult]:
     """Open the login window and poll until all three cookies are captured.
 
-    Returns the captured ``{name: value}`` dict, or ``None`` (pywebview missing,
-    timeout, or the window closed before login completed).
+    Returns a :class:`CaptureResult` (the ``{name: value}`` dict plus the
+    earliest cookie expiry), or ``None`` (pywebview missing, timeout, or the
+    window closed before login completed).
     """
     try:
         import webview  # type: ignore[import-not-found]  # optional dependency (see --group login)
@@ -102,7 +184,7 @@ def capture_cookies(
         )
         return None
 
-    captured: dict[str, Optional[dict[str, str]]] = {"cookies": None}
+    captured: dict[str, Any] = {"cookies": None, "expiry": None}
 
     def _poll(window: Any) -> None:
         deadline = time.time() + timeout
@@ -126,6 +208,7 @@ def capture_cookies(
             found = extract_cookies(cookies)
             if len(found) == len(TARGET_COOKIES):
                 captured["cookies"] = found
+                captured["expiry"] = earliest_target_expiry(cookies)
                 break
             time.sleep(POLL_INTERVAL_SECONDS)
         try:
@@ -139,8 +222,10 @@ def capture_cookies(
         file=message_stream,
     )
     window = webview.create_window("Log in to CFN / Buckler", start_url)
-    webview.start(_poll, window)
-    return captured["cookies"]
+    webview.start(_poll, (window,))
+    if captured["cookies"] is None:
+        return None
+    return CaptureResult(cookies=captured["cookies"], expiry=captured["expiry"])
 
 
 def verify_cookies(
@@ -195,10 +280,11 @@ def main() -> int:
         )
         return 1
 
-    cookies = capture_cookies()
-    if cookies is None:
+    result = capture_cookies()
+    if result is None:
         print("login: no cookies captured (window closed or timed out). Nothing written.", file=sys.stderr)
         return 1
+    cookies = result.cookies
 
     try:
         praise_date = int(cookies["buckler_praise_date"])
@@ -227,6 +313,7 @@ def main() -> int:
         )
     else:
         print("login: captured and verified cookies -> wrote them to config.toml.", file=sys.stderr)
+    print(f"login: these cookies are set to expire {format_expiry(result.expiry)}.", file=sys.stderr)
     print("login: restart the monitor (app.py) to pick up the new cookies.", file=sys.stderr)
     return 0
 

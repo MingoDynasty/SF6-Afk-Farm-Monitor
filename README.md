@@ -68,6 +68,7 @@ keep `buckler_praise_date` numeric: blanking it fails config validation before t
 A browser window opens at the CFN/Buckler site. Log in normally — Capcom ID, plus any MFA/captcha, are handled right
 there in the window. Once you're logged in, the window closes itself, the three cookies are verified against the real
 API, and they're written into `config.toml` for you. Nothing is typed by hand and the cookies never leave your machine.
+It also prints when the captured cookies are set to expire, so you have a rough idea of when you'll next need to run it.
 
 If `pywebview` isn't installed, `login.py` prints an install hint and you can fall back to the manual steps below.
 
