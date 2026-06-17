@@ -72,11 +72,11 @@ login.py  ──opens──►  pywebview window (WebView2)  ──user logs in�
 - **`pywebview` as an optional dependency.** Add a `[project.optional-dependencies] login = ["pywebview>=5"]` extra, exactly as Voltmeter does. The core monitor stays dependency-light; `login.py` prints an install hint if `webview` import fails (fall back to the manual DevTools procedure, which still works). WebView2 ships with Windows 11, so no separate runtime install is needed on the target machine.
 - **Cookie-shape handling.** Reuse the defensive `_iter_cookie_pairs` shape-normalizer from the spike / Voltmeter (WebView2 returns `SimpleCookie`/`Morsel`; other backends differ). Extraction here is *simpler* than Voltmeter's — no chunked-cookie reassembly, no bearer exchange — just pull three cookies by exact name.
 
-## 5. Cookie storage — **OPEN DECISION (deferred 2026-06-13)**
+## 5. Cookie storage — **DECISION: Option A (in-place `config.toml` rewrite)**
 
-Where `login.py` writes the captured values. Deliberately left open per the planning discussion; both options below are viable. **Recommendation: Option A.**
+Where `login.py` writes the captured values. *Decided 2026-06-16: Option A*, and shipped as `config.update_buckler_cookies`. The rejected alternative (Option B) is kept below for the record.
 
-### Option A — rewrite `config.toml` in place (recommended)
+### Option A (chosen) — rewrite `config.toml` in place
 
 Surgical line-replace of the three keys, preserving comments and other settings (the technique Voltmeter's `write_env_var` uses for `.env`, adapted to TOML).
 
@@ -86,9 +86,9 @@ Surgical line-replace of the three keys, preserving comments and other settings 
   - **Type asymmetry:** `buckler_id` / `buckler_r_id` are quoted strings; `buckler_praise_date` is an **unquoted `int`** (`config.py:31`). The writer must emit the right form per key, or pydantic load fails.
   - **Write safety:** write to a temp file and `os.replace` (the atomic-write discipline from review M1) so a crash mid-write can't corrupt `config.toml`.
 
-### Option B — separate cookie file
+### Option B (rejected) — separate cookie file
 
-`login.py` writes e.g. `data/buckler_cookies.json`; the config layer loads cookies from there, overriding the `config.toml` values.
+`login.py` writes e.g. `data/buckler_cookies.json`; the config layer loads cookies from there, overriding the `config.toml` values. Rejected in favour of Option A — the extra secret location and precedence rule weren't worth it for a project built around a single state artifact.
 
 - **Pros:** trivial, safe write path (just dump JSON atomically); no TOML mutation; no string/int quoting concern.
 - **Cons:** introduces a *second* secret location and a precedence rule (`config.toml` vs. cookie file — which wins?); `config.py` grows merge logic; `example.toml`'s three keys become vestigial/confusing. More moving parts for a project whose whole ethos is "single artifact" (cf. the single-`database.json` decision).
