@@ -30,8 +30,8 @@ MASTER_COLOR_THRESHOLD = 100
 AGGREGATE_CHARACTER = "Any"
 
 AUTH_EXPIRED_MESSAGE = (
-    "Buckler session expired — refresh buckler_id / buckler_r_id / "
-    "buckler_praise_date in config.toml. All monitoring is blind until then."
+    "Buckler session expired — run `uv run python login.py` to re-capture cookies, "
+    "then restart the monitor. All monitoring is blind until then."
 )
 
 
