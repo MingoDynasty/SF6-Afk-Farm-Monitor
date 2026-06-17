@@ -1,8 +1,8 @@
 # Proposal: Login Capture — Auto-Pull Buckler Cookies via an Embedded Browser
 
 - **Date:** 2026-06-13
-- **Status:** Draft for discussion
-- **Feasibility:** **CONFIRMED by spike (2026-06-13)** — see §2.
+- **Status:** **IMPLEMENTED** — Phase 1 shipped in PR #8 (merged 2026-06-16) and confirmed working on a live login. Phases 2–3 remain deferred (§10).
+- **Feasibility:** **CONFIRMED by spike (2026-06-13)**, then by an end-to-end live run (2026-06-16) — see §2.
 - **Reference:** Voltmeter-Aimlabs `aimlabs_auth.py` (`login_and_capture`) and its `[login]` optional-dependency pattern. This proposal adapts that mechanism; it does not copy it verbatim (three cookies vs. one, `config.toml` vs. `.env`, no bearer-token exchange).
 - **Scheduling:** post-roadmap quality-of-life. Self-contained; depends on nothing in `CODEBASE_REVIEW.md`'s remaining L16/L17.
 
@@ -136,7 +136,7 @@ The interactive window itself isn't unit-testable (Voltmeter doesn't test it eit
 
 ## 11. Open questions
 
-1. **Cookie storage: Option A (rewrite `config.toml`) vs. Option B (separate file)?** *Deferred 2026-06-13.* Recommendation: **A** (§5). *Default if unanswered: A.*
-2. **Include Phase 2 (persisted profile) in the first cut, or ship capture-only first?** *Default if unanswered: capture-only first, Phase 2 as a fast follow.*
-3. **Start URL:** land on the Buckler top page and let the user click "Login" (robust, no guessing), or deep-link to a protected page that force-redirects to Capcom ID? *Default if unanswered: top page — the spike used it and it worked.*
-4. **Login timeout** before the window auto-closes. *Default if unanswered: 300 s (Voltmeter's default).*
+1. **Cookie storage: Option A (rewrite `config.toml`) vs. Option B (separate file)?** **RESOLVED 2026-06-16: Option A** — in-place `config.toml` rewrite, as shipped (§5).
+2. **Include Phase 2 (persisted profile) in the first cut, or ship capture-only first?** **RESOLVED 2026-06-16: capture-only** shipped first; Phase 2 deferred (§10).
+3. **Start URL:** land on the Buckler top page and let the user click "Login" (robust, no guessing), or deep-link to a protected page that force-redirects to Capcom ID? **RESOLVED 2026-06-16: top page** — confirmed working on the live run (the poll waits through the Auth0 redirect and captures the cookies on return).
+4. **Login timeout** before the window auto-closes. **RESOLVED 2026-06-16: 300 s** default (Voltmeter's default), as shipped.
