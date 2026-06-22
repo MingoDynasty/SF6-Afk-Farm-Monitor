@@ -79,13 +79,31 @@ class PushoverClient:
         return response_json
 
     def cancel(self, receipt: str) -> bool:
+        """Cancel an emergency retry by receipt.
+
+        Returns True when the cancel is *settled* and the receipt can be
+        forgotten: either Pushover accepted it, or it reports the receipt gone
+        (a 4xx such as the 404 "receipt not found; may be invalid or expired"
+        Pushover returns once the emergency window has elapsed — it is no longer
+        nagging anyone, so there is nothing left to cancel). Returns False only
+        on a transient failure (network error or 5xx) worth retrying next poll,
+        so a stale receipt never wedges ``pending_cancel`` into logging 404s
+        forever.
+        """
         encoded_receipt = quote(receipt, safe="")
-        return (
-            self._post(
-                f"receipts/{encoded_receipt}/cancel.json", {"token": self.app_key}
+        path = f"receipts/{encoded_receipt}/cancel.json"
+        response = self._request("POST", path, data={"token": self.app_key})
+        if response is None:
+            return False  # network failure: retry next poll
+        if 400 <= response.status_code < 500:
+            logger.info(
+                "Pushover cancel for %s returned HTTP %s; receipt already gone, "
+                "treating as cancelled.",
+                path,
+                response.status_code,
             )
-            is not None
-        )
+            return True
+        return self._response_json(response, "POST", path) is not None
 
     def cancel_by_tag(self, tag: str) -> bool:
         encoded_tag = quote(tag, safe="")
@@ -110,6 +128,20 @@ class PushoverClient:
         data: JsonDict | None = None,
         params: JsonDict | None = None,
     ) -> JsonDict | None:
+        response = self._request(method, path, data=data, params=params)
+        if response is None:
+            return None
+        return self._response_json(response, method, path)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        data: JsonDict | None = None,
+        params: JsonDict | None = None,
+    ) -> requests.Response | None:
+        """Perform the HTTP call and record the quota header. Returns the
+        response, or None on a network-level failure (always transient)."""
         url = f"{self.base_url}/{path}"
 
         try:
@@ -137,6 +169,11 @@ class PushoverClient:
                 remaining,
             )
 
+        return response
+
+    def _response_json(
+        self, response: requests.Response, method: str, path: str
+    ) -> JsonDict | None:
         try:
             response_json = response.json()
         except ValueError:
