@@ -69,6 +69,43 @@ have all landed with tests (93 passing) and clean Black/mypy.
 - **Decisions made in-session:** <small calls not covered by the docs>
 -->
 
+### 2026-06-21 — Session 8: post-roadmap maintenance (Pushover cancel 404 loop)
+- **Branch / commits:** `fix-pending-cancel-404-loop`; `163e776` fix + tests; this log entry follows on the same branch.
+- **Done:** Fixed a `pending_cancel` retry loop that logged a Pushover 404
+  every poll, forever. A receipt is parked in `pending_cancel` when an
+  observed-recovery cancel fails (`_close_emergency`); `retry_pending_cancels`
+  re-attempts it each poll and only drops it when `cancel()` returns True.
+  But once the emergency window elapses Pushover answers cancel with **HTTP 404
+  "receipt not found; may be invalid or expired"** — a *permanent* outcome —
+  and the old `cancel()` returned False for every non-200, so the receipt never
+  cleared and the 404 was re-logged at ERROR on every poll. `notifier_client.py`
+  `cancel()` now returns **True (settled — drop the receipt)** on success or any
+  **4xx** (an expired/invalid receipt is no longer nagging anyone, so there is
+  nothing left to cancel) and **False (retry next poll)** only on a network
+  error or **5xx**; the 4xx is logged **once at INFO**, not repeatedly at ERROR.
+  Refactored `_request_json` into `_request` (HTTP call + quota header) +
+  `_response_json` (parse + status check) so `cancel` can see the status code;
+  `send`/`check_receipt`/`cancel_by_tag` are unchanged.
+- **Verified by:** `uv run python -m pytest --basetemp=.pytest-tmp` → **115 passed**
+  (was 111; +4). New `tests/test_notifier_client.py` covers `cancel` on 200
+  (True), 404 (True + one INFO log, no ERROR), a `ConnectionError` (False), and
+  500 (False) — the client's HTTP layer previously had no tests. `uv run black
+  --check notifier_client.py tests/test_notifier_client.py` clean; `uv run mypy
+  notifier_client.py tests/test_notifier_client.py` → no issues.
+- **Not done / carried over:** The one stale receipt currently in the live
+  `data/notification_state.json` clears itself on the next poll after this ships
+  (404 → settled → dropped + saved, one final INFO line). Nothing else changed.
+- **Decisions made in-session:**
+  - **Not a spec change.** §6 of `ALERT_DEDUPLICATION_PROPOSAL.md` already scopes
+    the `pending_cancel` retry to a transient *"network blip"*; the code had been
+    retrying *every* failure. This fix makes the code match §6's stated intent,
+    so no proposal text needed editing.
+  - **4xx ⇒ settled, only 5xx/network ⇒ retry.** Standard Pushover-client rule:
+    a 4xx is a permanent client-side outcome (the receipt is gone), so retrying
+    it is pure noise; 5xx and network failures are the only transient cases worth
+    a retry. Treating *all* 4xx (not just 404) as settled is deliberate — any
+    "this request is permanently invalid" answer means there is nothing to retry.
+
 ### 2026-06-13 — Session 7: roadmap step 9 (remaining Low-severity cleanup)
 - **Branch / commits:** `roadmap-step-9`; `f751038` L12 drop unused `import logging.config`, `f2dfb21` L8 drop sortedcontainers, `2bf706e` L9 retire utilities.py + shortened.json, `824f3d5` L7 named constants, `31fc218` L4 pydantic field constraints, `8c5bcca` L11 return hints, `af97170` L18 README
 - **Done:**
