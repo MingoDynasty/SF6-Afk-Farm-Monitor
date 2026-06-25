@@ -53,7 +53,7 @@ EMERGENCY_TAGS = {
 # Distinct built-in Pushover sound per incident type so alerts are
 # distinguishable from the lock screen without reading them (§9.1).
 INCIDENT_SOUNDS = {
-    STUCK_FARM: "siren",
+    STUCK_FARM: "pushover",
     SWAP_NEEDED: "magic",
     AUTH_EXPIRED: "falling",
     API_DOWN: "falling",
