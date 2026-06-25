@@ -8,7 +8,7 @@ healthy-unknown, never a 500).
 
 import json
 
-from status_server import build_status, load_status_data
+from status_server import PAGE_HTML, build_status, load_status_data
 
 NOW = 1_000_000.0
 
@@ -22,6 +22,27 @@ def _state(incidents: dict | None = None, last_change_at: float | None = NOW) ->
     if last_change_at is not None:
         state["last_change_at"] = last_change_at
     return state
+
+
+def test_status_page_includes_dark_mode_toggle() -> None:
+    assert 'id="theme-toggle"' in PAGE_HTML
+    assert 'aria-label="Toggle color scheme"' in PAGE_HTML
+    assert "header-actions" in PAGE_HTML
+    assert "meta-row" in PAGE_HTML
+    assert 'id="refresh-status"' in PAGE_HTML
+    assert 'id="staleness-value"' in PAGE_HTML
+    assert "moon-icon" in PAGE_HTML
+    assert "sun-icon" in PAGE_HTML
+    assert "data-theme" in PAGE_HTML
+    assert "sf6-status-theme" in PAGE_HTML
+    assert "tbody tr:hover td" in PAGE_HTML
+    assert ".count { text-align: right" in PAGE_HTML
+    assert "td.count { text-align: right" not in PAGE_HTML
+    assert '"Refreshes every 30s"' in PAGE_HTML
+    assert "toLocaleTimeString" not in PAGE_HTML
+    assert 'id="footer"' not in PAGE_HTML
+    assert 'getElementById("footer")' not in PAGE_HTML
+    assert "setInterval(updateStalenessLine, 1000)" in PAGE_HTML
 
 
 # -- character rows / sorting ------------------------------------------------
