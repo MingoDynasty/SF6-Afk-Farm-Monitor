@@ -198,50 +198,246 @@ PAGE_HTML = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SF6 Afk Farm Monitor</title>
+<script>
+(function () {
+  let theme = "light";
+  try {
+    const stored = localStorage.getItem("sf6-status-theme");
+    if (stored === "dark" || stored === "light") {
+      theme = stored;
+    } else if (window.matchMedia &&
+               window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      theme = "dark";
+    }
+  } catch (err) {
+    // Storage can be unavailable in private modes; keep the light default.
+  }
+  document.documentElement.dataset.theme = theme;
+})();
+</script>
 <style>
+  :root {
+    color-scheme: light;
+    --bg: #f4f5f7;
+    --text: #1a1a1a;
+    --muted: #555;
+    --column-label: #777;
+    --border: #ddd;
+    --row-border: #eee;
+    --row-hover: #e9edf2;
+    --bar-bg: #e0e0e0;
+    --fill: #1976d2;
+    --finished-fill: #2e7d32;
+    --finished-text: #2e7d32;
+    --footer: #999;
+    --toggle-bg: #fff;
+    --toggle-border: #c9ced6;
+    --toggle-hover-bg: #e9edf2;
+    --toggle-icon: #1976d2;
+    --health-ok-bg: #e6f4ea;
+    --health-ok-text: #1e7e34;
+    --health-stuck-bg: #fff4e5;
+    --health-stuck-text: #a15c00;
+    --health-down-bg: #fdecea;
+    --health-down-text: #b71c1c;
+    --health-unknown-bg: #eceff1;
+    --health-unknown-text: #546e7a;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #1a1b1e;
+    --text: #c1c2c5;
+    --muted: #a6a7ab;
+    --column-label: #909296;
+    --border: #373a40;
+    --row-border: #2c2e33;
+    --row-hover: #25262b;
+    --bar-bg: #373a40;
+    --fill: #1971c2;
+    --finished-fill: #2b8a3e;
+    --finished-text: #8ce99a;
+    --footer: #909296;
+    --toggle-bg: #25262b;
+    --toggle-border: #373a40;
+    --toggle-hover-bg: #2c2e33;
+    --toggle-icon: #fab005;
+    --health-ok-bg: #1d3b27;
+    --health-ok-text: #8ce99a;
+    --health-stuck-bg: #3b2f18;
+    --health-stuck-text: #ffd43b;
+    --health-down-bg: #3b1f24;
+    --health-down-text: #ffa8a8;
+    --health-unknown-bg: #2c2e33;
+    --health-unknown-text: #c1c2c5;
+  }
+  * { box-sizing: border-box; }
   body { font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
-         margin: 0; background: #f4f5f7; color: #1a1a1a; }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 1.5rem 1rem; }
-  h1 { font-size: 1.3rem; margin: 0 0 0.75rem; }
+         margin: 0; background: var(--bg); color: var(--text); }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 1.25rem 1rem; }
+  .header { display: flex; align-items: center; justify-content: space-between;
+            gap: 1rem; margin-bottom: 0.35rem; }
+  .header-actions { align-items: center; display: flex; flex: 0 0 auto;
+                    flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }
+  h1 { font-size: 1.3rem; margin: 0; }
+  .theme-toggle { border: 1px solid var(--toggle-border);
+                  background: var(--toggle-bg); color: var(--text);
+                  border-radius: 999px; cursor: pointer; flex: 0 0 auto;
+                  display: inline-grid; height: 2rem; place-items: center;
+                  padding: 0; width: 2rem; }
+  .theme-toggle:hover { background: var(--toggle-hover-bg); }
+  .theme-icon { color: var(--toggle-icon); display: block; grid-area: 1 / 1;
+                height: 1rem; width: 1rem; }
+  .sun-icon { display: none; }
+  :root[data-theme="dark"] .moon-icon { display: none; }
+  :root[data-theme="dark"] .sun-icon { display: block; }
   .health { display: inline-block; font-weight: 600; padding: 0.35rem 0.8rem;
             border-radius: 999px; font-size: 0.95rem; }
-  .health.ok { background: #e6f4ea; color: #1e7e34; }
-  .health.stuck { background: #fff4e5; color: #a15c00; }
-  .health.down, .health.auth { background: #fdecea; color: #b71c1c; }
-  .health.unknown { background: #eceff1; color: #546e7a; }
-  .meta { color: #555; font-size: 0.9rem; margin: 0.4rem 0 0; }
-  table { width: 100%; border-collapse: collapse; margin-top: 1.1rem; }
+  .health.ok { background: var(--health-ok-bg); color: var(--health-ok-text); }
+  .health.stuck { background: var(--health-stuck-bg);
+                  color: var(--health-stuck-text); }
+  .health.down, .health.auth { background: var(--health-down-bg);
+                               color: var(--health-down-text); }
+  .health.unknown { background: var(--health-unknown-bg);
+                    color: var(--health-unknown-text); }
+  .meta-row { align-items: baseline; display: flex; gap: 1rem;
+              justify-content: space-between; margin-bottom: 0.55rem; }
+  .meta { color: var(--muted); font-size: 0.9rem; margin: 0; }
+  .refresh-status { color: var(--footer); font-size: 0.8rem;
+                    white-space: nowrap; }
+  .staleness { margin-left: auto; text-align: right; }
+  table { width: 100%; border-collapse: collapse; margin-top: 0; }
   th { text-align: left; font-size: 0.8rem; text-transform: uppercase;
-       letter-spacing: 0.03em; color: #777; border-bottom: 1px solid #ddd;
-       padding: 0 0.5rem 0.4rem; }
-  td { padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; }
+       letter-spacing: 0.03em; color: var(--column-label);
+       border-bottom: 1px solid var(--border); padding: 0 0.45rem 0.3rem; }
+  td { padding: 0.22rem 0.45rem; border-bottom: 1px solid var(--row-border); }
+  tbody tr:hover td { background: var(--row-hover); }
   td.bar-cell { width: 55%; }
-  td.count { text-align: right; font-variant-numeric: tabular-nums;
-             white-space: nowrap; }
-  .bar { background: #e0e0e0; border-radius: 4px; height: 14px; overflow: hidden; }
-  .fill { height: 100%; background: #1976d2; transition: width 0.3s; }
-  tr.finished .fill { background: #2e7d32; }
-  tr.finished td.name::after { content: " \\2713"; color: #2e7d32; }
-  .footer { color: #999; font-size: 0.8rem; margin-top: 1.1rem; }
+  .count { text-align: right; font-variant-numeric: tabular-nums;
+           white-space: nowrap; }
+  .bar { background: var(--bar-bg); border-radius: 4px; height: 12px;
+         overflow: hidden; }
+  .fill { height: 100%; background: var(--fill); transition: width 0.3s; }
+  tr.finished .fill { background: var(--finished-fill); }
+  tr.finished td.name::after { content: " \\2713"; color: var(--finished-text); }
+  @media (max-width: 560px) {
+    .header { align-items: flex-start; }
+    .meta-row { display: block; margin-bottom: 0.5rem; }
+    .staleness { margin-top: 0.15rem; text-align: left; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>SF6 Afk Farm Monitor</h1>
-  <div id="health" class="health unknown">Loading...</div>
-  <p class="meta" id="tally"></p>
-  <p class="meta" id="staleness"></p>
+  <div class="header">
+    <h1>SF6 Afk Farm Monitor</h1>
+    <div class="header-actions">
+      <span id="refresh-status" class="refresh-status">Refreshes every 30s</span>
+      <div id="health" class="health unknown">Loading...</div>
+      <button id="theme-toggle" class="theme-toggle" type="button"
+              aria-label="Toggle color scheme" aria-pressed="false"
+              title="Toggle color scheme">
+        <svg class="theme-icon moon-icon" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"></path>
+        </svg>
+        <svg class="theme-icon sun-icon" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"></circle>
+          <path d="M12 2v2"></path><path d="M12 20v2"></path>
+          <path d="m4.9 4.9 1.4 1.4"></path>
+          <path d="m17.7 17.7 1.4 1.4"></path>
+          <path d="M2 12h2"></path><path d="M20 12h2"></path>
+          <path d="m4.9 19.1 1.4-1.4"></path>
+          <path d="m17.7 6.3 1.4-1.4"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+  <div class="meta-row">
+    <p class="meta" id="tally"></p>
+    <p class="meta staleness" id="staleness">
+      <span>Last battle-count change: </span><span id="staleness-value">unknown</span>
+    </p>
+  </div>
   <table>
     <thead><tr>
       <th>Character</th><th class="bar-cell">Progress</th><th class="count">Battles</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
-  <p class="footer" id="footer"></p>
 </div>
 <script>
 const HEALTH_CLASS = { OK: "ok", STUCK: "stuck", API_DOWN: "down",
                        AUTH_EXPIRED: "auth", UNKNOWN: "unknown" };
+const THEME_STORAGE_KEY = "sf6-status-theme";
+let stalenessClock = null;
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function setTheme(theme, persist) {
+  document.documentElement.dataset.theme = theme;
+  const toggle = document.getElementById("theme-toggle");
+  if (toggle) {
+    const isDark = theme === "dark";
+    toggle.setAttribute("aria-pressed", String(isDark));
+    toggle.setAttribute(
+      "aria-label",
+      isDark ? "Switch to light mode" : "Switch to dark mode"
+    );
+    toggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+  }
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch (err) {
+      // The visual toggle still works when storage is blocked.
+    }
+  }
+}
+
+function setupThemeToggle() {
+  const toggle = document.getElementById("theme-toggle");
+  if (!toggle) return;
+  setTheme(currentTheme(), false);
+  toggle.addEventListener("click", () => {
+    setTheme(currentTheme() === "dark" ? "light" : "dark", true);
+  });
+}
+
+function plural(value, unit) {
+  return value + " " + unit + (value === 1 ? "" : "s") + " ago";
+}
+
+function formatElapsedSeconds(seconds) {
+  const elapsed = Math.max(0, Math.floor(seconds));
+  if (elapsed < 5) return "just now";
+  if (elapsed < 60) return plural(elapsed, "second");
+  if (elapsed < 3600) return plural(Math.floor(elapsed / 60), "minute");
+  if (elapsed < 86400) return plural(Math.floor(elapsed / 3600), "hour");
+  return plural(Math.floor(elapsed / 86400), "day");
+}
+
+function updateStalenessLine() {
+  const stalenessValue = document.getElementById("staleness-value");
+  if (!stalenessValue) return;
+  let text = "unknown";
+  if (!stalenessClock) {
+    if (stalenessValue.textContent !== text) {
+      stalenessValue.textContent = text;
+    }
+    return;
+  }
+  const elapsed = stalenessClock.secondsAtFetch +
+                  (Date.now() - stalenessClock.fetchedAtMs) / 1000;
+  text = formatElapsedSeconds(elapsed);
+  if (stalenessValue.textContent !== text) {
+    stalenessValue.textContent = text;
+  }
+}
 
 async function refresh() {
   try {
@@ -252,7 +448,7 @@ async function refresh() {
     const health = document.getElementById("health");
     health.className = "health down";
     health.textContent = "Status unavailable";
-    document.getElementById("footer").textContent =
+    document.getElementById("refresh-status").textContent =
       "Last fetch failed: " + err.message;
   }
 }
@@ -264,9 +460,13 @@ function render(data) {
 
   document.getElementById("tally").textContent =
     data.finished_count + " / " + data.total_count + " characters finished";
-  document.getElementById("staleness").textContent =
-    "Last battle-count change: " +
-    (data.time_since_last_change || "unknown");
+  stalenessClock = Number.isFinite(data.seconds_since_last_change) ?
+    {
+      secondsAtFetch: data.seconds_since_last_change,
+      fetchedAtMs: Date.now(),
+    } :
+    null;
+  updateStalenessLine();
 
   const rows = document.getElementById("rows");
   rows.textContent = "";
@@ -295,12 +495,12 @@ function render(data) {
     tr.append(name, barCell, count);
     rows.appendChild(tr);
   }
-
-  document.getElementById("footer").textContent =
-    "Updated " + new Date().toLocaleTimeString() + " - refreshes every 30s";
+  document.getElementById("refresh-status").textContent = "Refreshes every 30s";
 }
 
+setupThemeToggle();
 refresh();
+setInterval(updateStalenessLine, 1000);
 setInterval(refresh, 30000);
 </script>
 </body>
