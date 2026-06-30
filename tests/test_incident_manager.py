@@ -557,7 +557,7 @@ def test_swap_needed_re_arm_fires_after_ack_like_stuck_farm(
 # -- notification polish: per-type sound, profile url, detection timestamp ----
 
 
-def test_stuck_farm_send_has_siren_sound_profile_url_and_timestamp(
+def test_stuck_farm_send_has_default_pushover_sound_profile_url_and_timestamp(
     fake_client: FakePushoverClient,
     fake_clock: FakeClock,
     make_config: Callable[..., ConfigData],
@@ -570,7 +570,7 @@ def test_stuck_farm_send_has_siren_sound_profile_url_and_timestamp(
     manager.evaluate_stuck_farm(active=True, build_message=stuck_message)
 
     sent = fake_client.sent[0]
-    assert sent["sound"] == "siren"
+    assert sent["sound"] == "pushover"
     assert sent["url"] == (
         "https://www.streetfighter.com/6/buckler/profile/1234567890/play"
     )
