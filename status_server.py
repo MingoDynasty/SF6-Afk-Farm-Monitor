@@ -512,7 +512,7 @@ PAGE_BYTES = PAGE_HTML.encode("utf-8")
 class StatusRequestHandler(BaseHTTPRequestHandler):
     """Serves the HTML status page and the status JSON."""
 
-    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+    def do_GET(self) -> None:
         """Serve the status page, JSON status, or a not-found response."""
         route = self.path.split("?", 1)[0]
         if route == "/":
