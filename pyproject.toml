@@ -46,6 +46,11 @@ extend-select = [
     "G",
     "BLE",
 ]
+ignore = [
+    "PLR2004",  # magic-value comparisons — parity with Corporate-Serf; SF6's
+                # validation migration showed 90% of the noise is test
+                # assertions, where literal expected values are correct style
+]
 
 [tool.ruff.lint.pycodestyle]
 max-line-length = 120
