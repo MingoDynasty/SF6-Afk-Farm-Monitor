@@ -728,7 +728,7 @@ login = [
 requires-dist = [
     { name = "humanize", specifier = ">=4.15.0" },
     { name = "pydantic", specifier = ">=2" },
-    { name = "requests", specifier = ">=2.32.5" },
+    { name = "requests", specifier = ">=2.33.0" },
     { name = "schedule", specifier = ">=1.2.2" },
 ]
 
