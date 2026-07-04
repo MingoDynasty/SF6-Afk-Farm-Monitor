@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 import requests
+from conftest import FakeClock, FakePushoverClient
 from requests import HTTPError
 
 import task
 from api_service import AuthExpiredError
 from config import ConfigData
-from conftest import FakeClock, FakePushoverClient
 from incident_manager import (
     API_DOWN,
     AUTH_EXPIRED,

@@ -1,3 +1,5 @@
+"""Send Pushover notifications and manage emergency receipts."""
+
 import logging
 from typing import Any
 from urllib.parse import quote
@@ -13,6 +15,8 @@ JsonDict = dict[str, Any]
 
 
 class PushoverClient:
+    """Wrap the Pushover API used by incident notifications."""
+
     def __init__(
         self,
         app_key: str,
@@ -20,6 +24,7 @@ class PushoverClient:
         base_url: str = PUSHOVER_API_BASE_URL,
         timeout: tuple[int, int] = REQUEST_TIMEOUT,
     ) -> None:
+        """Configure Pushover credentials and HTTP request settings."""
         self.app_key = app_key
         self.user_key = user_key
         self.base_url = base_url.rstrip("/")
@@ -29,7 +34,7 @@ class PushoverClient:
         # failing (ALERT_DEDUPLICATION_PROPOSAL.md §9.2). None until first call.
         self.last_remaining: int | None = None
 
-    def send(
+    def send(  # noqa: PLR0913  # Parameters mirror Pushover message fields.
         self,
         message: str,
         priority: int = 0,
@@ -41,6 +46,7 @@ class PushoverClient:
         url_title: str | None = None,
         timestamp: int | None = None,
     ) -> str | None:
+        """Send a message and return its emergency receipt, if any."""
         payload: JsonDict = {
             "token": self.app_key,
             "user": self.user_key,
@@ -70,6 +76,7 @@ class PushoverClient:
         return str(receipt)
 
     def check_receipt(self, receipt: str) -> JsonDict:
+        """Return the latest status for an emergency-message receipt."""
         encoded_receipt = quote(receipt, safe="")
         response_json = self._get(
             f"receipts/{encoded_receipt}.json", {"token": self.app_key}
@@ -106,6 +113,7 @@ class PushoverClient:
         return self._response_json(response, "POST", path) is not None
 
     def cancel_by_tag(self, tag: str) -> bool:
+        """Cancel every outstanding emergency receipt with the given tag."""
         encoded_tag = quote(tag, safe="")
         return (
             self._post(

@@ -1,3 +1,5 @@
+"""Run the scheduled SF6 monitor and configure its logging."""
+
 import logging
 import sys
 import time
@@ -13,6 +15,7 @@ from task import do_task
 
 
 def main() -> None:
+    """Configure and run the monitor until it is stopped."""
     config = load_config()
 
     #

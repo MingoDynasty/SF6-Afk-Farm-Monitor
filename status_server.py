@@ -513,6 +513,7 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
     """Serves the HTML status page and the status JSON."""
 
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        """Serve the status page, JSON status, or a not-found response."""
         route = self.path.split("?", 1)[0]
         if route == "/":
             self._serve_html()
@@ -546,11 +547,12 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format: str, *args: Any) -> None:
-        # Route the default stderr access log through logging instead.
+        """Route HTTP access messages through the application logger."""
         logger.info("%s - %s", self.address_string(), format % args)
 
 
 def main() -> None:
+    """Run the LAN-accessible status server until interrupted."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",

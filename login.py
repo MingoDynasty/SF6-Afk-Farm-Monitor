@@ -23,13 +23,13 @@ at startup. See docs/LOGIN_CAPTURE_PROPOSAL.md for the full design.
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 import sys
+import time
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from http.cookies import Morsel
-import time
 from typing import Any, NamedTuple, Optional, TextIO
 
 from pydantic import ValidationError
@@ -80,7 +80,9 @@ def extract_cookies(cookies: Any) -> dict[str, str]:
     return found
 
 
-def _cookie_expiry(cookie_obj: Any) -> Optional[datetime]:
+def _cookie_expiry(  # noqa: PLR0911  # Guard clauses keep cookie-shape handling explicit.
+    cookie_obj: Any,
+) -> Optional[datetime]:
     """Best-effort absolute expiry (UTC) of one cookie object, or None.
 
     Handles an ``http.cookies.Morsel`` (``expires`` HTTP-date, else relative
@@ -181,6 +183,8 @@ def format_expiries(expiries: Mapping[str, datetime]) -> str:
 
 
 class CaptureResult(NamedTuple):
+    """Hold captured cookie values and their declared expiries."""
+
     cookies: dict[str, str]
     expiries: dict[
         str, datetime
@@ -200,7 +204,7 @@ def capture_cookies(
     window closed before login completed).
     """
     try:
-        import webview  # type: ignore[import-not-found]  # optional dependency (see --group login)
+        import webview  # type: ignore[import-not-found]  # noqa: PLC0415  # Optional dependency.
     except ImportError:
         print(
             "login needs the optional dependency 'pywebview'.\n"
@@ -220,7 +224,7 @@ def capture_cookies(
         while time.time() < deadline:
             try:
                 cookies = window.get_cookies()
-            except Exception as error:  # pylint: disable=broad-exception-caught
+            except Exception as error:  # noqa: BLE001  # Backend may not be ready.
                 # The backend may not be ready to serve cookies yet.
                 print(
                     f"login: (get_cookies not ready yet: {error})", file=message_stream
@@ -246,7 +250,7 @@ def capture_cookies(
             time.sleep(POLL_INTERVAL_SECONDS)
         try:
             window.destroy()
-        except Exception:  # pylint: disable=broad-exception-caught
+        except Exception:  # noqa: BLE001  # Window teardown is best effort.
             pass
 
     print(
@@ -284,12 +288,13 @@ def verify_cookies(
         fetcher(verify_config)
     except AuthExpiredError:
         return "rejected"
-    except Exception:  # pylint: disable=broad-exception-caught
+    except Exception:  # noqa: BLE001  # Non-auth failures leave verification unknown.
         return "unverified"
     return "verified"
 
 
 def main() -> int:
+    """Capture, verify, and persist fresh Buckler session cookies."""
     try:
         config = load_config()
     except FileNotFoundError:
