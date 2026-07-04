@@ -4,9 +4,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from conftest import FakeClock, FakePushoverClient
 
 from config import ConfigData
-from conftest import FakeClock, FakePushoverClient
 from incident_manager import (
     API_DOWN,
     AUTH_EXPIRED,

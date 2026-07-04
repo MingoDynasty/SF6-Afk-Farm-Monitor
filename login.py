@@ -23,13 +23,13 @@ at startup. See docs/LOGIN_CAPTURE_PROPOSAL.md for the full design.
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 import sys
+import time
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from http.cookies import Morsel
-import time
 from typing import Any, NamedTuple, Optional, TextIO
 
 from pydantic import ValidationError
@@ -80,7 +80,9 @@ def extract_cookies(cookies: Any) -> dict[str, str]:
     return found
 
 
-def _cookie_expiry(cookie_obj: Any) -> Optional[datetime]:
+def _cookie_expiry(  # noqa: PLR0911  # Guard clauses keep cookie-shape handling explicit.
+    cookie_obj: Any,
+) -> Optional[datetime]:
     """Best-effort absolute expiry (UTC) of one cookie object, or None.
 
     Handles an ``http.cookies.Morsel`` (``expires`` HTTP-date, else relative
@@ -92,7 +94,7 @@ def _cookie_expiry(cookie_obj: Any) -> Optional[datetime]:
         if expires:
             try:
                 parsed = parsedate_to_datetime(expires)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 parsed = None
             if parsed is not None:
                 return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
@@ -100,14 +102,14 @@ def _cookie_expiry(cookie_obj: Any) -> Optional[datetime]:
         if max_age:
             try:
                 return datetime.now(timezone.utc) + timedelta(seconds=int(max_age))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return None
         return None
     epoch = getattr(cookie_obj, "expires", None)
     if epoch:
         try:
             return datetime.fromtimestamp(int(epoch), tz=timezone.utc)
-        except (TypeError, ValueError, OSError, OverflowError):
+        except TypeError, ValueError, OSError, OverflowError:
             return None
     return None
 
@@ -166,19 +168,27 @@ def format_expiries(expiries: Mapping[str, datetime]) -> str:
     """
     if not expiries:
         return "login: cookie expiry unknown (this backend did not report one)."
-    lines = ["login: captured cookie expiries (the earliest is when the monitor needs fresh cookies):"]
+    lines = [
+        "login: captured cookie expiries (the earliest is when the monitor needs fresh cookies):"
+    ]
     for name in TARGET_COOKIES:
         expiry = expiries.get(name)
         if expiry is None:
             lines.append(f"  {name}: session cookie (no expiry reported)")
         else:
-            lines.append(f"  {name}: {expiry:%Y-%m-%d %H:%M UTC} ({_format_until(expiry)})")
+            lines.append(
+                f"  {name}: {expiry:%Y-%m-%d %H:%M UTC} ({_format_until(expiry)})"
+            )
     return "\n".join(lines)
 
 
 class CaptureResult(NamedTuple):
+    """Hold captured cookie values and their declared expiries."""
+
     cookies: dict[str, str]
-    expiries: dict[str, datetime]  # absolute expiry (UTC) per target cookie that declares one
+    expiries: dict[
+        str, datetime
+    ]  # absolute expiry (UTC) per target cookie that declares one
 
 
 def capture_cookies(
@@ -194,11 +204,11 @@ def capture_cookies(
     window closed before login completed).
     """
     try:
-        import webview  # type: ignore[import-not-found]  # optional dependency (see --group login)
+        import webview  # type: ignore[import-not-found]  # noqa: PLC0415  # Optional dependency.
     except ImportError:
         print(
             "login needs the optional dependency 'pywebview'.\n"
-            "  install it with:  uv sync --group login   (or: uv run --with \"pywebview>=5\" python login.py)\n"
+            '  install it with:  uv sync --group login   (or: uv run --with "pywebview>=5" python login.py)\n'
             "  Until then, capture the cookies manually: log into the CFN site, open\n"
             "  DevTools -> Network, and copy buckler_id / buckler_r_id /\n"
             "  buckler_praise_date from a request's Cookie header into config.toml.",
@@ -214,9 +224,11 @@ def capture_cookies(
         while time.time() < deadline:
             try:
                 cookies = window.get_cookies()
-            except Exception as error:  # pylint: disable=broad-exception-caught
+            except Exception as error:  # noqa: BLE001  # Backend may not be ready.
                 # The backend may not be ready to serve cookies yet.
-                print(f"login: (get_cookies not ready yet: {error})", file=message_stream)
+                print(
+                    f"login: (get_cookies not ready yet: {error})", file=message_stream
+                )
                 time.sleep(POLL_INTERVAL_SECONDS)
                 continue
 
@@ -225,7 +237,10 @@ def capture_cookies(
             names = sorted({name for name, _ in _iter_cookie_pairs(cookies) if name})
             if names != last_names:
                 last_names = names
-                print(f"login: cookies visible now: {names or '(none)'}", file=message_stream)
+                print(
+                    f"login: cookies visible now: {names or '(none)'}",
+                    file=message_stream,
+                )
 
             found = extract_cookies(cookies)
             if len(found) == len(TARGET_COOKIES):
@@ -235,7 +250,7 @@ def capture_cookies(
             time.sleep(POLL_INTERVAL_SECONDS)
         try:
             window.destroy()
-        except Exception:  # pylint: disable=broad-exception-caught
+        except Exception:  # noqa: BLE001  # Window teardown is best effort.
             pass
 
     print(
@@ -273,12 +288,13 @@ def verify_cookies(
         fetcher(verify_config)
     except AuthExpiredError:
         return "rejected"
-    except Exception:  # pylint: disable=broad-exception-caught
+    except Exception:  # noqa: BLE001  # Non-auth failures leave verification unknown.
         return "unverified"
     return "verified"
 
 
 def main() -> int:
+    """Capture, verify, and persist fresh Buckler session cookies."""
     try:
         config = load_config()
     except FileNotFoundError:
@@ -304,7 +320,10 @@ def main() -> int:
 
     result = capture_cookies()
     if result is None:
-        print("login: no cookies captured (window closed or timed out). Nothing written.", file=sys.stderr)
+        print(
+            "login: no cookies captured (window closed or timed out). Nothing written.",
+            file=sys.stderr,
+        )
         return 1
     cookies = result.cookies
 
@@ -334,9 +353,15 @@ def main() -> int:
             file=sys.stderr,
         )
     else:
-        print("login: captured and verified cookies -> wrote them to config.toml.", file=sys.stderr)
+        print(
+            "login: captured and verified cookies -> wrote them to config.toml.",
+            file=sys.stderr,
+        )
     print(format_expiries(result.expiries), file=sys.stderr)
-    print("login: restart the monitor (app.py) to pick up the new cookies.", file=sys.stderr)
+    print(
+        "login: restart the monitor (app.py) to pick up the new cookies.",
+        file=sys.stderr,
+    )
     return 0
 
 

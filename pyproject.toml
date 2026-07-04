@@ -15,8 +15,10 @@ dependencies = [
 dev = [
     "datamodel-code-generator>=0.53.0",
     "mypy>=1.11",
+    "pre-commit>=4.6.0",
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "ruff>=0.15.19",
     "types-requests>=2.32",
 ]
 # `login.py` opens an embedded browser via pywebview to capture the Buckler
@@ -24,6 +26,57 @@ dev = [
 # (login.py prints an install hint when it is missing). A dependency-group rather
 # than a project extra, to match how `dev` is declared in this uv-managed project.
 login = ["pywebview>=5"]
+
+[tool.uv]
+required-version = "==0.11.26"
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+force-exclude = true
+
+[tool.ruff.lint]
+extend-select = [
+    "I",
+    "E",
+    "W",
+    "D1",
+    "PL",
+    "ARG",
+    "G",
+    "BLE",
+]
+ignore = [
+    "PLR2004",  # magic-value comparisons — parity with Corporate-Serf; SF6's
+                # validation migration showed 90% of the noise is test
+                # assertions, where literal expected values are correct style
+]
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 120
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1", "PLR09", "ARG"]
+
+[tool.mypy]
+files = [
+    "app.py",
+    "api_service.py",
+    "config.py",
+    "incident_manager.py",
+    "login.py",
+    "model.py",
+    "notifier_client.py",
+    "paths.py",
+    "status_server.py",
+    "task.py",
+    "tests",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=.pytest-tmp"
+pythonpath = ["."]
 
 #[project.scripts]
 #test = "scripts.test:main"

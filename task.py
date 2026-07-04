@@ -1,3 +1,5 @@
+"""Poll Buckler, persist battle counts, and drive monitor incidents."""
+
 import json
 import logging
 import os
@@ -38,6 +40,7 @@ AUTH_EXPIRED_MESSAGE = (
 def write_to_database(
     data: Mapping[str, int], database_filename: str | Path = DATABASE_FILENAME
 ) -> None:
+    """Atomically persist the latest per-character battle counts."""
     database_path = Path(database_filename)
     temporary_database_path = database_path.with_name(f"{database_path.name}.tmp")
     with temporary_database_path.open("w", encoding="utf-8") as file:
@@ -51,6 +54,7 @@ def write_to_database(
 
 
 def read_database(database_filename: str | Path) -> dict[str, int] | None:
+    """Load persisted battle counts, returning None when unusable."""
     database_path = Path(database_filename)
     try:
         with database_path.open(encoding="utf-8") as file:
@@ -84,11 +88,12 @@ def read_database(database_filename: str | Path) -> dict[str, int] | None:
         return None
 
 
-def do_task(
+def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
     config: ConfigData,
     incident_manager: IncidentManager,
     database_filename: str | Path = DATABASE_FILENAME,
 ) -> None:
+    """Poll Buckler once and reconcile persisted state and notifications."""
     incident_manager.retry_pending_cancels()
 
     try:
@@ -96,19 +101,19 @@ def do_task(
     except AuthExpiredError:
         # Expired cookies are actionable and blind all monitoring; an emergency
         # incident nags until the user refreshes them (review finding M3).
-        logger.error(AUTH_EXPIRED_MESSAGE, exc_info=True)
+        logger.exception(AUTH_EXPIRED_MESSAGE)
         incident_manager.evaluate_auth_expired(
             active=True, build_message=lambda: AUTH_EXPIRED_MESSAGE
         )
         return
     except HTTPError:
         message = "Capcom Buckler website down?"
-        logger.error(message, exc_info=True)
+        logger.exception(message)
         incident_manager.evaluate_api_down(active=True, down_message=message)
         return
     except Exception:
         message = "Caught generic Exception. This isn't an HTTPError? Capcom Buckler website must be completely borked."
-        logger.error(message, exc_info=True)
+        logger.exception(message)
         incident_manager.evaluate_api_down(active=True, down_message=message)
         return
 

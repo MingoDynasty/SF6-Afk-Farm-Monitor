@@ -1,3 +1,5 @@
+"""Fetch and validate battle counts from the Buckler API."""
+
 import json
 import logging
 
@@ -24,6 +26,7 @@ class AuthExpiredError(Exception):
 
 
 def get_character_win_rates(config: ConfigData) -> WinRateResponse:
+    """Fetch the configured player's per-character battle counts."""
     payload = json.dumps(
         {
             "targetShortId": config.user_code,
@@ -34,7 +37,11 @@ def get_character_win_rates(config: ConfigData) -> WinRateResponse:
     )
     headers = {
         "Accept": "*/*",
-        "Cookie": f"buckler_id={config.buckler_id}; buckler_r_id={config.buckler_r_id}; buckler_praise_date={config.buckler_praise_date}",
+        "Cookie": (
+            f"buckler_id={config.buckler_id}; "
+            f"buckler_r_id={config.buckler_r_id}; "
+            f"buckler_praise_date={config.buckler_praise_date}"
+        ),
         "Origin": "https://www.streetfighter.com",
         "Connection": "keep-alive",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0",

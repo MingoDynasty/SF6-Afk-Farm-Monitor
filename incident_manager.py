@@ -76,6 +76,7 @@ class IncidentManager:
         state_path: str | Path = NOTIFICATION_STATE_FILENAME,
         clock: Callable[[], float] = time.time,
     ) -> None:
+        """Load persisted incident state and prepare notification handling."""
         self.client = client
         self.config = config
         self.enabled = config.pushover_enabled
@@ -183,10 +184,12 @@ class IncidentManager:
     # -- stuck-timer state (replaces the database.json mtime check, M10) -----
 
     def record_change(self) -> None:
+        """Record farm progress and persist the updated change time."""
         self.last_change_at = self.clock()
         self._save()
 
     def seconds_since_last_change(self) -> float:
+        """Return elapsed seconds since the latest observed farm progress."""
         return self.clock() - self.last_change_at
 
     # -- emergency incidents (stuck_farm, auth_expired) ---------------------
@@ -194,11 +197,13 @@ class IncidentManager:
     def evaluate_stuck_farm(
         self, active: bool, build_message: Callable[[], str]
     ) -> None:
+        """Open, update, or close the stuck-farm emergency incident."""
         self._evaluate_emergency(STUCK_FARM, STUCK_FARM_TAG, active, build_message)
 
     def evaluate_auth_expired(
         self, active: bool, build_message: Callable[[], str]
     ) -> None:
+        """Open, update, or close the expired-session emergency incident."""
         # Same emergency policy as stuck_farm (retry/expire/re-raise/re-arm):
         # expired Buckler cookies are fully actionable and blind all monitoring
         # until fixed. The only difference is the close signal — auth_expired
@@ -212,6 +217,7 @@ class IncidentManager:
         crossed_characters: list[str],
         build_message: Callable[[str], str],
     ) -> None:
+        """Track whether a completed character still needs to be swapped."""
         # Master-color swap incident (§7), replacing the per-match re-fire from
         # commit ffb650b. Emergency policy identical to stuck_farm; the only
         # differences are the open and close signals:
@@ -416,8 +422,7 @@ class IncidentManager:
                 # cost of a failed cancel is continued nagging until ack/expire.
                 self.pending_cancel.append(receipt)
                 logger.warning(
-                    "%s recovery: receipt cancel failed; "
-                    "will retry cancel next poll.",
+                    "%s recovery: receipt cancel failed; will retry cancel next poll.",
                     kind,
                 )
         del self.incidents[kind]
@@ -427,6 +432,7 @@ class IncidentManager:
     # -- api_down incident (one-shot, high priority) ------------------------
 
     def evaluate_api_down(self, active: bool, down_message: str | None = None) -> None:
+        """Open or close the one-shot Buckler API outage incident."""
         incident = self.incidents.get(API_DOWN)
         if active:
             if incident is None:

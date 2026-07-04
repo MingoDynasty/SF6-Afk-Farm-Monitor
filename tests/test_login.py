@@ -77,7 +77,9 @@ def test_verify_cookies_verified(make_config: Callable[..., ConfigData]) -> None
         seen["config"] = config
         return WinRateResponse(character_win_rates=[])
 
-    assert verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher) == "verified"
+    assert (
+        verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher) == "verified"
+    )
     # The probe runs with the captured cookies, praise_date coerced to int.
     assert seen["config"].buckler_id == "id"
     assert seen["config"].buckler_praise_date == 123
@@ -87,7 +89,9 @@ def test_verify_cookies_rejected(make_config: Callable[..., ConfigData]) -> None
     def fetcher(config: ConfigData) -> WinRateResponse:
         raise AuthExpiredError("expired")
 
-    assert verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher) == "rejected"
+    assert (
+        verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher) == "rejected"
+    )
 
 
 def test_verify_cookies_unverified_on_other_error(
@@ -96,7 +100,10 @@ def test_verify_cookies_unverified_on_other_error(
     def fetcher(config: ConfigData) -> WinRateResponse:
         raise RuntimeError("network down")
 
-    assert verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher) == "unverified"
+    assert (
+        verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher)
+        == "unverified"
+    )
 
 
 def _fail_if_called(*args: object, **kwargs: object) -> None:
