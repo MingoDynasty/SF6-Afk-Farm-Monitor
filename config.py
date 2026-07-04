@@ -96,7 +96,9 @@ def update_buckler_cookies(
         for key in list(remaining):
             # Match `key =` / `key=` at the start of the line (ignoring leading
             # whitespace), but never a commented-out line.
-            if re.match(rf"\s*{re.escape(key)}\s*=", line) and not line.lstrip().startswith("#"):
+            if re.match(
+                rf"\s*{re.escape(key)}\s*=", line
+            ) and not line.lstrip().startswith("#"):
                 lines[index] = f"{key} = {remaining.pop(key)}{_line_ending(line)}"
                 break
 

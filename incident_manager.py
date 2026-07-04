@@ -416,8 +416,7 @@ class IncidentManager:
                 # cost of a failed cancel is continued nagging until ack/expire.
                 self.pending_cancel.append(receipt)
                 logger.warning(
-                    "%s recovery: receipt cancel failed; "
-                    "will retry cancel next poll.",
+                    "%s recovery: receipt cancel failed; will retry cancel next poll.",
                     kind,
                 )
         del self.incidents[kind]

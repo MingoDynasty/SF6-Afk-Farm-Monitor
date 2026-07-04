@@ -72,7 +72,9 @@ def test_update_buckler_cookies_round_trips(tmp_path: Path) -> None:
     assert config.buckler_praise_date == 9999999999999
 
 
-def test_update_buckler_cookies_preserves_comments_and_other_keys(tmp_path: Path) -> None:
+def test_update_buckler_cookies_preserves_comments_and_other_keys(
+    tmp_path: Path,
+) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text(SAMPLE_CONFIG, encoding="utf-8")
 
@@ -96,6 +98,8 @@ def test_update_buckler_cookies_appends_missing_key(tmp_path: Path) -> None:
         SAMPLE_CONFIG.replace('buckler_r_id = ""\n', ""), encoding="utf-8"
     )
 
-    update_buckler_cookies("new-id", "appended-r-id", 9999999999999, config_file=config_file)
+    update_buckler_cookies(
+        "new-id", "appended-r-id", 9999999999999, config_file=config_file
+    )
 
     assert load_config(config_file).buckler_r_id == "appended-r-id"
