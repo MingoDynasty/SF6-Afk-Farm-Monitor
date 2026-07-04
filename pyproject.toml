@@ -76,6 +76,7 @@ files = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--basetemp=.pytest-tmp"
+pythonpath = ["."]
 
 #[project.scripts]
 #test = "scripts.test:main"
