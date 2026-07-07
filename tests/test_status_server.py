@@ -6,9 +6,21 @@ missing/corrupt state files (a missing notification_state.json must render as
 healthy-unknown, never a 500).
 """
 
+import http.client
 import json
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from http.server import ThreadingHTTPServer
+from typing import cast
 
-from status_server import PAGE_HTML, build_status, load_status_data
+import status_server
+from status_server import (
+    PAGE_HTML,
+    StatusRequestHandler,
+    build_status,
+    load_status_data,
+)
 
 NOW = 1_000_000.0
 
@@ -22,6 +34,32 @@ def _state(incidents: dict | None = None, last_change_at: float | None = NOW) ->
     if last_change_at is not None:
         state["last_change_at"] = last_change_at
     return state
+
+
+@contextmanager
+def _run_status_server() -> Iterator[tuple[str, int]]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), StatusRequestHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield cast(tuple[str, int], server.server_address)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def _http_request(
+    address: tuple[str, int], method: str, path: str
+) -> tuple[int, dict[str, str], bytes]:
+    connection = http.client.HTTPConnection(*address, timeout=5)
+    try:
+        connection.request(method, path)
+        response = connection.getresponse()
+        body = response.read()
+        return response.status, dict(response.getheaders()), body
+    finally:
+        connection.close()
 
 
 def test_status_page_includes_dark_mode_toggle() -> None:
@@ -45,15 +83,38 @@ def test_status_page_includes_dark_mode_toggle() -> None:
     assert "setInterval(updateStalenessLine, 1000)" in PAGE_HTML
 
 
+def test_status_page_includes_pr1_ux_hooks() -> None:
+    assert 'rel="icon"' in PAGE_HTML
+    assert "data:image/svg+xml" in PAGE_HTML
+    assert 'id="swap-needed"' in PAGE_HTML
+    assert 'role="status"' in PAGE_HTML
+    assert "SWAP NEEDED: " in PAGE_HTML
+    assert "Progress to 100" in PAGE_HTML
+    assert "No character data yet \\u2014 is the monitor running?" in PAGE_HTML
+    assert "empty.colSpan = 3" in PAGE_HTML
+    assert 'bar.setAttribute("aria-hidden", "true")' in PAGE_HTML
+    assert 'fill.setAttribute("aria-hidden", "true")' in PAGE_HTML
+    assert 'const ALERT_TITLE_PREFIX = "\\u26A0 "' in PAGE_HTML
+    assert (
+        'document.title = (actionable ? ALERT_TITLE_PREFIX : "") + BASE_TITLE'
+        in PAGE_HTML
+    )
+    assert "--footer: #666;" in PAGE_HTML
+    assert "--column-label: #666;" in PAGE_HTML
+    assert "position: sticky" in PAGE_HTML
+    assert "background: var(--bg)" in PAGE_HTML
+    assert "innerHTML" not in PAGE_HTML
+
+
 # -- character rows / sorting ------------------------------------------------
 
 
-def test_character_rows_sorted_unfinished_first_then_descending() -> None:
-    database = _database(Ken=16, Luke=106, Manon=103, Marisa=12, Ryu=0)
+def test_character_rows_sorted_unfinished_first_then_finished_by_name() -> None:
+    database = _database(Ken=16, Luke=103, Marisa=12, Ryu=0, Zangief=106)
     status = build_status(database, _state(), NOW)
     order = [row["name"] for row in status["characters"]]
-    # Unfinished (<100) first, by descending count; finished (>=100) after.
-    assert order == ["Ken", "Marisa", "Ryu", "Luke", "Manon"]
+    # Unfinished (<100) first, by descending count; finished (>=100) by name.
+    assert order == ["Ken", "Marisa", "Ryu", "Luke", "Zangief"]
 
 
 def test_rows_with_equal_count_break_ties_by_name() -> None:
@@ -146,10 +207,30 @@ def test_health_priority_auth_over_api_over_stuck() -> None:
 
 
 def test_swap_and_low_quota_incidents_do_not_change_health() -> None:
-    # Only the four enumerated states are health states (§2).
+    # Only the four enumerated states are health states (section 2).
     incidents = {"swap_needed": {"opened_at": NOW}, "low_quota": {"opened_at": NOW}}
     status = build_status(_database(Ken=16), _state(incidents=incidents), NOW)
     assert status["health"]["status"] == "OK"
+
+
+def test_swap_needed_emitted_for_valid_incident_without_affecting_health() -> None:
+    incidents = {"swap_needed": {"opened_at": NOW, "character": "Ryu"}}
+    status = build_status(_database(Ryu=100), _state(incidents=incidents), NOW)
+    assert status["swap_needed"] == {"character": "Ryu"}
+    assert status["health"]["status"] == "OK"
+
+
+def test_swap_needed_is_null_when_absent_or_malformed() -> None:
+    states = [
+        _state(),
+        _state(incidents={"swap_needed": {}}),
+        _state(incidents={"swap_needed": {"character": 123}}),
+        _state(incidents={"swap_needed": "Ryu"}),
+        {"incidents": []},
+        ["not", "a", "dict"],
+    ]
+    for state in states:
+        assert build_status(_database(Ryu=100), state, NOW)["swap_needed"] is None
 
 
 def test_stuck_minutes_falls_back_to_opened_at_without_last_change() -> None:
@@ -227,3 +308,55 @@ def test_load_status_data_returns_none_for_corrupt_json(tmp_path) -> None:
     database, state = load_status_data(bad, good)
     assert database is None
     assert state == {"incidents": {}}
+
+
+# -- HTTP handler ------------------------------------------------------------
+
+
+def test_head_root_matches_get_headers_and_has_empty_body() -> None:
+    with _run_status_server() as address:
+        get_status, get_headers, get_body = _http_request(address, "GET", "/")
+        head_status, head_headers, head_body = _http_request(address, "HEAD", "/")
+
+    assert get_status == 200
+    assert head_status == 200
+    assert head_body == b""
+    assert head_headers["Content-Type"] == get_headers["Content-Type"]
+    assert head_headers["Content-Length"] == get_headers["Content-Length"]
+    assert int(head_headers["Content-Length"]) == len(get_body)
+
+
+def test_head_api_status_matches_get_headers_and_has_empty_body(monkeypatch) -> None:
+    monkeypatch.setattr(
+        status_server,
+        "load_status_data",
+        lambda: (_database(Ken=16), _state()),
+    )
+    monkeypatch.setattr(status_server.time, "time", lambda: NOW)
+
+    with _run_status_server() as address:
+        get_status, get_headers, get_body = _http_request(address, "GET", "/api/status")
+        head_status, head_headers, head_body = _http_request(
+            address, "HEAD", "/api/status"
+        )
+
+    assert get_status == 200
+    assert head_status == 200
+    assert head_body == b""
+    assert head_headers["Content-Type"] == get_headers["Content-Type"]
+    assert head_headers["Content-Length"] == get_headers["Content-Length"]
+    assert int(head_headers["Content-Length"]) == len(get_body)
+
+
+def test_head_unknown_route_returns_404_without_body() -> None:
+    with _run_status_server() as address:
+        get_status, _, get_body = _http_request(address, "GET", "/missing")
+        head_status, head_headers, head_body = _http_request(
+            address, "HEAD", "/missing"
+        )
+
+    assert get_status == 404
+    assert get_body == b"Not found\n"
+    assert head_status == 404
+    assert head_body == b""
+    assert head_headers["Content-Length"] == str(len(get_body))

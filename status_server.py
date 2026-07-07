@@ -1,20 +1,20 @@
-"""Local LAN status page — a read-only view of farm progress.
+"""Local LAN status page - a read-only view of farm progress.
 
 A **separate process** from the monitor (``app.py``): it never imports the
 monitor's task/scheduler code and the monitor never imports it. It only *reads*
 ``data/database.json`` and ``data/notification_state.json`` from disk on each
 request (both are tiny, so there is no caching) and renders the current farm
 state. Because it only reads those two files, it can crash, hang, or be absent
-with zero effect on monitoring (STATUS_PAGE_PROPOSAL.md §3).
+with zero effect on monitoring (STATUS_PAGE_PROPOSAL.md section 3).
 
 It serves two endpoints:
 
-- ``GET /api/status`` — the assembled state as JSON.
-- ``GET /`` — a single self-contained HTML page (inline CSS/JS) that re-fetches
+- ``GET /api/status`` - the assembled state as JSON.
+- ``GET /`` - a single self-contained HTML page (inline CSS/JS) that re-fetches
   ``/api/status`` every 30 s and renders the character table, finished tally,
   staleness line, and health line. No build step, no framework.
 
-Security: the page is LAN-only by design, no auth (§5). It serves *only* the
+Security: the page is LAN-only by design, no auth (section 5). It serves *only* the
 two ``data/`` files; it never exposes ``config.toml`` contents. ``load_config``
 is used solely to read ``status_page_port``.
 """
@@ -52,12 +52,13 @@ NON_FARMABLE_CHARACTERS = frozenset({"Any", "Random"})
 # Health states derived from the open incidents in notification_state.json.
 # Ordered most-severe first: AUTH_EXPIRED and API_DOWN both blind monitoring;
 # STUCK means the farm stalled. swap_needed / low_quota are not health states
-# (STATUS_PAGE_PROPOSAL.md §2 enumerates exactly OK / STUCK / API DOWN / AUTH
+# (STATUS_PAGE_PROPOSAL.md section 2 enumerates exactly OK / STUCK / API DOWN / AUTH
 # EXPIRED). UNKNOWN is rendered when notification_state.json is missing/corrupt
 # (a healthy-unknown, never an error).
 AUTH_EXPIRED_KIND = "auth_expired"
 API_DOWN_KIND = "api_down"
 STUCK_FARM_KIND = "stuck_farm"
+SWAP_NEEDED_KIND = "swap_needed"
 
 
 def _read_json(path: Path) -> Any | None:
@@ -85,7 +86,7 @@ def load_status_data(
 def _build_character_rows(database: Any) -> list[dict[str, Any]]:
     """Turn the ``{name: battle_count}`` database into display rows, sorted
     unfinished-first then by descending battle count (the in-progress character
-    surfaces at the top), with the name as a stable tiebreak."""
+    surfaces at the top), then finished characters alphabetically."""
     if not isinstance(database, dict):
         return []
     rows: list[dict[str, Any]] = []
@@ -109,7 +110,13 @@ def _build_character_rows(database: Any) -> list[dict[str, Any]]:
                 "progress": max(0, min(battle_count, FINISHED_THRESHOLD)),
             }
         )
-    rows.sort(key=lambda row: (row["finished"], -row["battle_count"], row["name"]))
+    rows.sort(
+        key=lambda row: (
+            row["finished"],
+            0 if row["finished"] else -row["battle_count"],
+            row["name"],
+        )
+    )
     return rows
 
 
@@ -136,10 +143,26 @@ def _derive_health(
     return {"status": "OK", "label": "OK"}
 
 
+def _derive_swap_needed(state: Any) -> dict[str, str] | None:
+    """Extract the actionable swap-needed incident, if it is well-formed."""
+    if not isinstance(state, dict):
+        return None
+    incidents = state.get("incidents")
+    if not isinstance(incidents, dict):
+        return None
+    incident = incidents.get(SWAP_NEEDED_KIND)
+    if not isinstance(incident, dict):
+        return None
+    character = incident.get("character")
+    if not isinstance(character, str) or not character:
+        return None
+    return {"character": character}
+
+
 def _stuck_minutes(
     incident: Any, last_change_at: float | None, now: float
 ) -> int | None:
-    """Whole minutes the farm has been stuck — the staleness since the last
+    """Whole minutes the farm has been stuck - the staleness since the last
     battle-count change. Falls back to the incident's ``opened_at`` if
     last_change_at is unavailable."""
     reference = last_change_at
@@ -163,7 +186,7 @@ def _parse_last_change_at(state: Any) -> float | None:
 
 def build_status(database: Any, state: Any, now: float) -> dict[str, Any]:
     """Assemble the ``/api/status`` payload from the (possibly missing/corrupt)
-    parsed contents of the two state files. Never raises on bad input — missing
+    parsed contents of the two state files. Never raises on bad input - missing
     or malformed data degrades to empty rows / healthy-unknown."""
     characters = _build_character_rows(database)
     finished_count = sum(1 for row in characters if row["finished"])
@@ -179,6 +202,7 @@ def build_status(database: Any, state: Any, now: float) -> dict[str, Any]:
     return {
         "generated_at": now,
         "health": _derive_health(state, last_change_at, now),
+        "swap_needed": _derive_swap_needed(state),
         "last_change_at": last_change_at,
         "seconds_since_last_change": seconds_since,
         "time_since_last_change": time_since,
@@ -187,6 +211,15 @@ def build_status(database: Any, state: Any, now: float) -> dict[str, Any]:
         "characters": characters,
     }
 
+
+# Static data-URI favicon; kept URL-encoded so the Python source stays ASCII.
+FAVICON_HREF = (
+    "data:image/svg+xml,"
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E"
+    "%3Crect width='64' height='64' rx='12' fill='%231976d2'/%3E"
+    "%3Cpath d='M18 20h28v8H18zM18 36h20v8H18z' fill='white'/%3E"
+    "%3C/svg%3E"
+)
 
 # Single self-contained page. Vanilla JS re-fetches /api/status every 30 s and
 # re-renders; character names are written via textContent (never innerHTML), so
@@ -198,6 +231,7 @@ PAGE_HTML = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SF6 Afk Farm Monitor</title>
+<link rel="icon" href="__FAVICON_HREF__">
 <script>
 (function () {
   let theme = "light";
@@ -221,7 +255,7 @@ PAGE_HTML = """<!DOCTYPE html>
     --bg: #f4f5f7;
     --text: #1a1a1a;
     --muted: #555;
-    --column-label: #777;
+    --column-label: #666;
     --border: #ddd;
     --row-border: #eee;
     --row-hover: #e9edf2;
@@ -229,7 +263,7 @@ PAGE_HTML = """<!DOCTYPE html>
     --fill: #1976d2;
     --finished-fill: #2e7d32;
     --finished-text: #2e7d32;
-    --footer: #999;
+    --footer: #666;
     --toggle-bg: #fff;
     --toggle-border: #c9ced6;
     --toggle-hover-bg: #e9edf2;
@@ -308,9 +342,11 @@ PAGE_HTML = """<!DOCTYPE html>
   table { width: 100%; border-collapse: collapse; margin-top: 0; }
   th { text-align: left; font-size: 0.8rem; text-transform: uppercase;
        letter-spacing: 0.03em; color: var(--column-label);
-       border-bottom: 1px solid var(--border); padding: 0 0.45rem 0.3rem; }
+       background: var(--bg); border-bottom: 1px solid var(--border);
+       padding: 0 0.45rem 0.3rem; position: sticky; top: 0; }
   td { padding: 0.22rem 0.45rem; border-bottom: 1px solid var(--row-border); }
   tbody tr:hover td { background: var(--row-hover); }
+  .empty-row td { color: var(--muted); font-style: italic; text-align: center; }
   td.bar-cell { width: 55%; }
   .count { text-align: right; font-variant-numeric: tabular-nums;
            white-space: nowrap; }
@@ -332,7 +368,8 @@ PAGE_HTML = """<!DOCTYPE html>
     <h1>SF6 Afk Farm Monitor</h1>
     <div class="header-actions">
       <span id="refresh-status" class="refresh-status">Refreshes every 30s</span>
-      <div id="health" class="health unknown">Loading...</div>
+      <div id="swap-needed" class="health stuck" role="status" hidden></div>
+      <div id="health" class="health unknown" role="status">Loading...</div>
       <button id="theme-toggle" class="theme-toggle" type="button"
               aria-label="Toggle color scheme" aria-pressed="false"
               title="Toggle color scheme">
@@ -363,15 +400,18 @@ PAGE_HTML = """<!DOCTYPE html>
   </div>
   <table>
     <thead><tr>
-      <th>Character</th><th class="bar-cell">Progress</th><th class="count">Battles</th>
+      <th>Character</th><th class="bar-cell">Progress to __FINISHED_THRESHOLD__</th><th class="count">Battles</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
 </div>
 <script>
+const BASE_TITLE = "SF6 Afk Farm Monitor";
+const ALERT_TITLE_PREFIX = "\\u26A0 ";
 const HEALTH_CLASS = { OK: "ok", STUCK: "stuck", API_DOWN: "down",
                        AUTH_EXPIRED: "auth", UNKNOWN: "unknown" };
 const THEME_STORAGE_KEY = "sf6-status-theme";
+let hasRenderedStatus = false;
 let stalenessClock = null;
 
 function currentTheme() {
@@ -445,15 +485,37 @@ async function refresh() {
     if (!res.ok) throw new Error("HTTP " + res.status);
     render(await res.json());
   } catch (err) {
-    const health = document.getElementById("health");
-    health.className = "health down";
-    health.textContent = "Status unavailable";
+    if (!hasRenderedStatus) {
+      const health = document.getElementById("health");
+      health.className = "health down";
+      health.textContent = "Status unavailable";
+      document.title = ALERT_TITLE_PREFIX + BASE_TITLE;
+    }
     document.getElementById("refresh-status").textContent =
       "Last fetch failed: " + err.message;
   }
 }
 
+function updateDocumentTitle(data) {
+  const healthStatus = data.health.status;
+  const actionable = data.swap_needed ||
+                     (healthStatus !== "OK" && healthStatus !== "UNKNOWN");
+  document.title = (actionable ? ALERT_TITLE_PREFIX : "") + BASE_TITLE;
+}
+
 function render(data) {
+  hasRenderedStatus = true;
+  updateDocumentTitle(data);
+
+  const swapNeeded = document.getElementById("swap-needed");
+  if (data.swap_needed) {
+    swapNeeded.hidden = false;
+    swapNeeded.textContent = "SWAP NEEDED: " + data.swap_needed.character;
+  } else {
+    swapNeeded.hidden = true;
+    swapNeeded.textContent = "";
+  }
+
   const health = document.getElementById("health");
   health.className = "health " + (HEALTH_CLASS[data.health.status] || "unknown");
   health.textContent = data.health.label;
@@ -470,6 +532,16 @@ function render(data) {
 
   const rows = document.getElementById("rows");
   rows.textContent = "";
+  if (data.characters.length === 0) {
+    const tr = document.createElement("tr");
+    tr.className = "empty-row";
+    const empty = document.createElement("td");
+    empty.colSpan = 3;
+    empty.textContent =
+      "No character data yet \\u2014 is the monitor running? (expects data/database.json)";
+    tr.appendChild(empty);
+    rows.appendChild(tr);
+  }
   for (const character of data.characters) {
     const tr = document.createElement("tr");
     if (character.finished) tr.className = "finished";
@@ -482,8 +554,10 @@ function render(data) {
     barCell.className = "bar-cell";
     const bar = document.createElement("div");
     bar.className = "bar";
+    bar.setAttribute("aria-hidden", "true");
     const fill = document.createElement("div");
     fill.className = "fill";
+    fill.setAttribute("aria-hidden", "true");
     fill.style.width = character.progress + "%";
     bar.appendChild(fill);
     barCell.appendChild(bar);
@@ -505,7 +579,9 @@ setInterval(refresh, 30000);
 </script>
 </body>
 </html>
-"""
+""".replace("__FAVICON_HREF__", FAVICON_HREF).replace(
+    "__FINISHED_THRESHOLD__", str(FINISHED_THRESHOLD)
+)
 PAGE_BYTES = PAGE_HTML.encode("utf-8")
 
 
@@ -514,37 +590,48 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         """Serve the status page, JSON status, or a not-found response."""
+        self._handle_request()
+
+    def do_HEAD(self) -> None:
+        """Serve the same headers as GET without writing a response body."""
+        self._handle_request(head=True)
+
+    def _handle_request(self, head: bool = False) -> None:
         route = self.path.split("?", 1)[0]
         if route == "/":
-            self._serve_html()
+            self._serve_html(head=head)
         elif route == "/api/status":
-            self._serve_status_json()
+            self._serve_status_json(head=head)
         else:
-            self._send_not_found()
+            self._send_not_found(head=head)
 
-    def _serve_html(self) -> None:
-        self._send_bytes(200, "text/html; charset=utf-8", PAGE_BYTES)
+    def _serve_html(self, head: bool = False) -> None:
+        self._send_bytes(200, "text/html; charset=utf-8", PAGE_BYTES, head=head)
 
-    def _serve_status_json(self) -> None:
+    def _serve_status_json(self, head: bool = False) -> None:
         database, state = load_status_data()
         payload = build_status(database, state, time.time())
         self._send_bytes(
             200,
             "application/json; charset=utf-8",
             json.dumps(payload, indent=2).encode("utf-8"),
+            head=head,
         )
 
-    def _send_not_found(self) -> None:
-        self._send_bytes(404, "text/plain; charset=utf-8", b"Not found\n")
+    def _send_not_found(self, head: bool = False) -> None:
+        self._send_bytes(404, "text/plain; charset=utf-8", b"Not found\n", head=head)
 
-    def _send_bytes(self, status: int, content_type: str, body: bytes) -> None:
+    def _send_bytes(
+        self, status: int, content_type: str, body: bytes, head: bool = False
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         # State changes at most once per polling interval; never cache.
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        if not head:
+            self.wfile.write(body)
 
     def log_message(self, format: str, *args: Any) -> None:
         """Route HTTP access messages through the application logger."""
@@ -559,8 +646,8 @@ def main() -> None:
     )
     # Only status_page_port is read; no other config value is ever served.
     port = load_config().status_page_port
-    # Bind 0.0.0.0 for LAN access (decided, §4). The first LAN request triggers
-    # a Windows Firewall prompt — allow on Private networks.
+    # Bind 0.0.0.0 for LAN access (decided, section 4). The first LAN request
+    # triggers a Windows Firewall prompt - allow on Private networks.
     server = ThreadingHTTPServer(("0.0.0.0", port), StatusRequestHandler)
     logger.info(
         "Status page serving on http://0.0.0.0:%s (LAN-accessible). "
