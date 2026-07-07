@@ -69,6 +69,13 @@ have all landed with tests (93 passing) and clean Black/mypy.
 - **Decisions made in-session:** <small calls not covered by the docs>
 -->
 
+### 2026-07-06 - Session 9: Pushover cancel retry policy
+- **Branch / commits:** `codex/pushover-retry-policy`; `TBD` implement 429-transient cancel policy.
+- **Done:** Implemented `docs/PUSHOVER_RETRY_POLICY_PROPOSAL.md` rev. 4 from `docs/pushover-retry-policy-proposal` (`6958f4a`). `PushoverClient.cancel()` now treats HTTP 429 as transient (returns `False`, logs one WARNING) while preserving the settled handling for other 4xx responses. `IncidentManager.pending_cancel` now persists as `dict[str, float]` (receipt -> absolute cancel deadline) instead of `list[str]`, with deadlines computed as `opened_at + min(expire, retry * 50)`. Emergency incidents now persist their send-time `retry` alongside `expire`; legacy incidents without `retry` fall back to the current config. Old list-shaped `pending_cancel` state migrates on load to one fresh bounded window and is saved back in the new shape.
+- **Verified by:** `uv run --frozen python -m black --check incident_manager.py notifier_client.py tests\test_incident_manager.py tests\test_notifier_client.py` (clean); `uv run --frozen python -m mypy incident_manager.py notifier_client.py tests\test_incident_manager.py tests\test_notifier_client.py` (no issues); `uv run --frozen python -m pytest --basetemp .pytest_cache\tmp` -> **123 passed**. Earlier targeted check: `uv run --frozen python -m pytest tests\test_notifier_client.py tests\test_incident_manager.py --basetemp .pytest_cache\tmp` -> **48 passed** after creating the ignored `.pytest_cache` parent directory.
+- **Not done / carried over:** `cancel_by_tag()` remains unchanged by design; it is still startup-only and does not feed a retry loop. The proposal document itself remains on its docs branch; this implementation PR references it but does not merge the proposal file into `main`.
+- **Decisions made in-session:** The pending-cancel load shim writes the migrated dict immediately, so old state is converted once instead of waiting for the next incident save. A deadline that has already passed is abandoned without another wire call, because the useful redelivery window is over.
+
 ### 2026-06-21 — Session 8: post-roadmap maintenance (Pushover cancel 404 loop)
 - **Branch / commits:** `fix-pending-cancel-404-loop`; `163e776` fix + tests; this log entry follows on the same branch.
 - **Done:** Fixed a `pending_cancel` retry loop that logged a Pushover 404

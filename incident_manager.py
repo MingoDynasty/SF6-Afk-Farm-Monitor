@@ -37,6 +37,8 @@ LOW_QUOTA = "low_quota"
 # remain in the monthly allowance, so quota exhaustion never silently mutes real
 # alerts (§9.2). Closes when the count rises back above the floor (monthly reset).
 QUOTA_FLOOR = 500
+# Pushover caps emergency redelivery at 50 retries, even when expire is longer.
+PUSHOVER_MAX_RETRIES = 50
 STUCK_FARM_TAG = "sf6mon-stuck_farm"
 AUTH_EXPIRED_TAG = "sf6mon-auth_expired"
 SWAP_NEEDED_TAG = "sf6mon-swap_needed"
@@ -85,7 +87,7 @@ class IncidentManager:
 
         self.incidents: dict[str, dict[str, Any]] = {}
         self.last_change_at: float = 0.0
-        self.pending_cancel: list[str] = []
+        self.pending_cancel: dict[str, float] = {}
         self._needs_reconcile = self._load()
 
     # -- persistence ---------------------------------------------------------
@@ -116,16 +118,35 @@ class IncidentManager:
             return True
 
         self.incidents = data.get("incidents") or {}
-        self.pending_cancel = list(data.get("pending_cancel") or [])
+        migrated_pending_cancel = self._load_pending_cancel(data.get("pending_cancel"))
         self.last_change_at = float(data.get("last_change_at") or 0)
         if self.last_change_at <= 0:
             self.last_change_at = self.clock()
+        if migrated_pending_cancel:
+            self._save()
         return False
 
     def _init_fresh(self) -> None:
         self.incidents = {}
-        self.pending_cancel = []
+        self.pending_cancel = {}
         self.last_change_at = self.clock()
+
+    def _load_pending_cancel(self, value: Any) -> bool:
+        if isinstance(value, dict):
+            self.pending_cancel = {
+                str(receipt): float(deadline) for receipt, deadline in value.items()
+            }
+            return False
+
+        old_receipts = value if isinstance(value, list) else []
+        deadline = self.clock() + self._cancel_window_seconds(
+            self.config.emergency_expire,
+            self.config.emergency_retry,
+        )
+        self.pending_cancel = {
+            str(receipt): deadline for receipt in old_receipts if receipt
+        }
+        return bool(old_receipts)
 
     def _save(self) -> None:
         data = {
@@ -172,13 +193,24 @@ class IncidentManager:
         """Retry receipt cancels that failed on a previous poll (§6)."""
         if not self.pending_cancel or not self.enabled:
             return
-        still_pending = [
-            receipt
-            for receipt in self.pending_cancel
-            if not self.client.cancel(receipt)
-        ]
-        if still_pending != self.pending_cancel:
-            self.pending_cancel = still_pending
+
+        changed = False
+        now = self.clock()
+        for receipt, deadline in list(self.pending_cancel.items()):
+            if now >= deadline:
+                logger.warning(
+                    "Pushover cancel window for receipt %s passed; abandoning "
+                    "pending cancel.",
+                    receipt,
+                )
+                del self.pending_cancel[receipt]
+                changed = True
+                continue
+            if self.client.cancel(receipt):
+                del self.pending_cancel[receipt]
+                changed = True
+
+        if changed:
             self._save()
 
     # -- stuck-timer state (replaces the database.json mtime check, M10) -----
@@ -325,6 +357,7 @@ class IncidentManager:
             "receipt": receipt,
             "opened_at": self.clock(),
             "expire": self.config.emergency_expire,
+            "retry": self.config.emergency_retry,
             "acked_at": 0,
         }
         if extra:
@@ -410,6 +443,7 @@ class IncidentManager:
         incident["receipt"] = receipt
         incident["opened_at"] = self.clock()
         incident["expire"] = self.config.emergency_expire
+        incident["retry"] = self.config.emergency_retry
         incident["acked_at"] = 0
         logger.warning("%s incident %s; fresh emergency alert sent.", kind, reason)
         self._save()
@@ -420,7 +454,7 @@ class IncidentManager:
             if not self.client.cancel(receipt):
                 # Keep the receipt and retry the cancel next poll (§6); the only
                 # cost of a failed cancel is continued nagging until ack/expire.
-                self.pending_cancel.append(receipt)
+                self.pending_cancel[receipt] = self._cancel_deadline(incident)
                 logger.warning(
                     "%s recovery: receipt cancel failed; will retry cancel next poll.",
                     kind,
@@ -428,6 +462,16 @@ class IncidentManager:
         del self.incidents[kind]
         logger.info("%s incident CLOSED (recovery observed).", kind)
         self._save()
+
+    def _cancel_deadline(self, incident: dict[str, Any]) -> float:
+        opened_at = float(incident.get("opened_at") or self.clock())
+        return opened_at + self._cancel_window_seconds(
+            incident.get("expire", self.config.emergency_expire),
+            incident.get("retry", self.config.emergency_retry),
+        )
+
+    def _cancel_window_seconds(self, expire: Any, retry: Any) -> float:
+        return min(float(expire), float(retry) * PUSHOVER_MAX_RETRIES)
 
     # -- api_down incident (one-shot, high priority) ------------------------
 
