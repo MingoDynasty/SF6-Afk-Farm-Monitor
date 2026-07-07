@@ -12,6 +12,7 @@ from incident_manager import (
     AUTH_EXPIRED,
     AUTH_EXPIRED_TAG,
     LOW_QUOTA,
+    PUSHOVER_MAX_RETRIES,
     QUOTA_FLOOR,
     STUCK_FARM,
     STUCK_FARM_TAG,
@@ -116,7 +117,7 @@ def test_observed_recovery_closes_and_cancels_receipt(
 
     assert fake_client.cancelled == [receipt]
     assert STUCK_FARM not in manager.incidents
-    assert manager.pending_cancel == []
+    assert manager.pending_cancel == {}
 
 
 def test_ack_alone_does_not_close_incident(
@@ -648,15 +649,147 @@ def test_failed_cancel_is_retried_next_poll(
     manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
     manager.evaluate_stuck_farm(active=True, build_message=stuck_message)
     receipt = manager.incidents[STUCK_FARM]["receipt"]
+    opened_at = manager.incidents[STUCK_FARM]["opened_at"]
 
     fake_client.cancel_result = False
     manager.evaluate_stuck_farm(active=False, build_message=stuck_message)
-    assert manager.pending_cancel == [receipt]
+    assert manager.pending_cancel == {receipt: opened_at + (120 * PUSHOVER_MAX_RETRIES)}
     assert STUCK_FARM not in manager.incidents
 
     fake_client.cancel_result = True
     manager.retry_pending_cancels()
-    assert manager.pending_cancel == []
+    assert manager.pending_cancel == {}
+
+
+def test_pending_cancel_deadline_is_cadence_independent(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_stuck_farm(active=True, build_message=stuck_message)
+    receipt = manager.incidents[STUCK_FARM]["receipt"]
+
+    fake_client.cancel_result = False
+    manager.evaluate_stuck_farm(active=False, build_message=stuck_message)
+    deadline = manager.pending_cancel[receipt]
+
+    for _ in range(10):
+        fake_clock.advance(1)
+        manager.retry_pending_cancels()
+
+    assert receipt in manager.pending_cancel
+    assert fake_client.cancelled == [receipt] * 11
+
+    fake_clock.advance(deadline - fake_clock.now)
+    with caplog.at_level(logging.WARNING):
+        manager.retry_pending_cancels()
+
+    assert manager.pending_cancel == {}
+    assert fake_client.cancelled == [receipt] * 11
+    assert "cancel window" in caplog.text
+
+
+def test_pending_cancel_deadline_uses_expire_when_it_binds(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(
+        fake_client,
+        make_config,
+        fake_clock,
+        tmp_path,
+        emergency_retry=120,
+        emergency_expire=300,
+    )
+    manager.evaluate_stuck_farm(active=True, build_message=stuck_message)
+    receipt = manager.incidents[STUCK_FARM]["receipt"]
+    opened_at = manager.incidents[STUCK_FARM]["opened_at"]
+
+    fake_client.cancel_result = False
+    manager.evaluate_stuck_farm(active=False, build_message=stuck_message)
+
+    assert manager.pending_cancel == {receipt: opened_at + 300}
+
+
+def test_pending_cancel_deadline_falls_back_to_config_retry(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    incident = {
+        "receipt": "legacy-receipt",
+        "opened_at": fake_clock.now - 30,
+        "expire": 10800,
+    }
+    manager.incidents[STUCK_FARM] = incident
+
+    fake_client.cancel_result = False
+    manager._close_emergency(STUCK_FARM, incident)
+
+    assert manager.pending_cancel == {
+        "legacy-receipt": fake_clock.now - 30 + (120 * PUSHOVER_MAX_RETRIES)
+    }
+
+
+def test_old_pending_cancel_list_migrates_to_deadline_dict(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "notification_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "incidents": {},
+                "last_change_at": fake_clock.now,
+                "pending_cancel": ["receipt-a", "receipt-b"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = IncidentManager(fake_client, make_config(), state_path, clock=fake_clock)
+
+    deadline = fake_clock.now + (120 * PUSHOVER_MAX_RETRIES)
+    assert manager.pending_cancel == {
+        "receipt-a": deadline,
+        "receipt-b": deadline,
+    }
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["pending_cancel"] == manager.pending_cancel
+
+
+def test_pending_cancel_deadline_dict_round_trips(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "notification_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "incidents": {},
+                "last_change_at": fake_clock.now,
+                "pending_cancel": {"receipt-a": fake_clock.now + 123},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = IncidentManager(fake_client, make_config(), state_path, clock=fake_clock)
+    manager._save()
+    reloaded = IncidentManager(fake_client, make_config(), state_path, clock=fake_clock)
+
+    assert reloaded.pending_cancel == {"receipt-a": fake_clock.now + 123}
 
 
 # -- api_down: one-shot high priority + courtesy recovery ---------------------

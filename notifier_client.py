@@ -90,18 +90,23 @@ class PushoverClient:
 
         Returns True when the cancel is *settled* and the receipt can be
         forgotten: either Pushover accepted it, or it reports the receipt gone
-        (a 4xx such as the 404 "receipt not found; may be invalid or expired"
-        Pushover returns once the emergency window has elapsed — it is no longer
-        nagging anyone, so there is nothing left to cancel). Returns False only
-        on a transient failure (network error or 5xx) worth retrying next poll,
-        so a stale receipt never wedges ``pending_cancel`` into logging 404s
-        forever.
+        (a 4xx except 429, such as the 404 "receipt not found; may be invalid
+        or expired" Pushover returns once the emergency window has elapsed — it
+        is no longer nagging anyone, so there is nothing left to cancel).
+        Returns False on a transient failure (network error, 5xx, or 429) worth
+        retrying next poll while the receipt's cancel window is still useful.
         """
         encoded_receipt = quote(receipt, safe="")
         path = f"receipts/{encoded_receipt}/cancel.json"
         response = self._request("POST", path, data={"token": self.app_key})
         if response is None:
             return False  # network failure: retry next poll
+        if response.status_code == 429:
+            logger.warning(
+                "Pushover cancel for %s rate-limited (HTTP 429); will retry.",
+                path,
+            )
+            return False
         if 400 <= response.status_code < 500:
             logger.info(
                 "Pushover cancel for %s returned HTTP %s; receipt already gone, "

@@ -38,6 +38,13 @@ def patch_post(monkeypatch: pytest.MonkeyPatch, response: FakeResponse) -> None:
     monkeypatch.setattr(requests, "post", lambda *args, **kwargs: response)
 
 
+def patch_post_sequence(
+    monkeypatch: pytest.MonkeyPatch, responses: list[FakeResponse]
+) -> None:
+    response_iter = iter(responses)
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: next(response_iter))
+
+
 @pytest.fixture
 def client() -> PushoverClient:
     return PushoverClient("app-key", "user-key")
@@ -69,6 +76,51 @@ def test_cancel_404_settles_to_true(
     # Logged once at INFO, not as a repeating ERROR.
     assert "receipt already gone" in caplog.text
     assert "failed" not in caplog.text
+
+
+def test_cancel_429_is_transient(
+    monkeypatch: pytest.MonkeyPatch,
+    client: PushoverClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    patch_post(monkeypatch, FakeResponse(429, {"status": 0}))
+
+    with caplog.at_level("WARNING"):
+        assert client.cancel("receipt-abc") is False
+
+    rate_limit_logs = [
+        record for record in caplog.records if "rate-limited" in record.message
+    ]
+    assert len(rate_limit_logs) == 1
+    assert rate_limit_logs[0].levelname == "WARNING"
+    assert "receipt already gone" not in caplog.text
+
+
+def test_cancel_429_then_404_retries_then_settles(
+    monkeypatch: pytest.MonkeyPatch,
+    client: PushoverClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    patch_post_sequence(
+        monkeypatch,
+        [
+            FakeResponse(429, {"status": 0}),
+            FakeResponse(
+                404,
+                {
+                    "status": 0,
+                    "errors": ["receipt not found; may be invalid or expired"],
+                },
+            ),
+        ],
+    )
+
+    with caplog.at_level("INFO"):
+        assert client.cancel("receipt-abc") is False
+        assert client.cancel("receipt-abc") is True
+
+    assert "rate-limited" in caplog.text
+    assert "receipt already gone" in caplog.text
 
 
 def test_cancel_network_error_is_transient(
