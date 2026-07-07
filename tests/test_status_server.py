@@ -92,8 +92,10 @@ def test_status_page_includes_pr1_ux_hooks() -> None:
     assert "Progress to 100" in PAGE_HTML
     assert "No character data yet \\u2014 is the monitor running?" in PAGE_HTML
     assert "empty.colSpan = 3" in PAGE_HTML
+    assert "if (swapNeeded.textContent !== swapLabel)" in PAGE_HTML
+    assert "if (health.textContent !== data.health.label)" in PAGE_HTML
     assert 'bar.setAttribute("aria-hidden", "true")' in PAGE_HTML
-    assert 'fill.setAttribute("aria-hidden", "true")' in PAGE_HTML
+    assert 'fill.setAttribute("aria-hidden", "true")' not in PAGE_HTML
     assert 'const ALERT_TITLE_PREFIX = "\\u26A0 "' in PAGE_HTML
     assert (
         'document.title = (actionable ? ALERT_TITLE_PREFIX : "") + BASE_TITLE'

@@ -509,16 +509,26 @@ function render(data) {
 
   const swapNeeded = document.getElementById("swap-needed");
   if (data.swap_needed) {
+    const swapLabel = "SWAP NEEDED: " + data.swap_needed.character;
     swapNeeded.hidden = false;
-    swapNeeded.textContent = "SWAP NEEDED: " + data.swap_needed.character;
+    if (swapNeeded.textContent !== swapLabel) {
+      swapNeeded.textContent = swapLabel;
+    }
   } else {
     swapNeeded.hidden = true;
-    swapNeeded.textContent = "";
+    if (swapNeeded.textContent !== "") {
+      swapNeeded.textContent = "";
+    }
   }
 
   const health = document.getElementById("health");
-  health.className = "health " + (HEALTH_CLASS[data.health.status] || "unknown");
-  health.textContent = data.health.label;
+  const healthClass = "health " + (HEALTH_CLASS[data.health.status] || "unknown");
+  if (health.className !== healthClass) {
+    health.className = healthClass;
+  }
+  if (health.textContent !== data.health.label) {
+    health.textContent = data.health.label;
+  }
 
   document.getElementById("tally").textContent =
     data.finished_count + " / " + data.total_count + " characters finished";
@@ -557,7 +567,6 @@ function render(data) {
     bar.setAttribute("aria-hidden", "true");
     const fill = document.createElement("div");
     fill.className = "fill";
-    fill.setAttribute("aria-hidden", "true");
     fill.style.width = character.progress + "%";
     bar.appendChild(fill);
     barCell.appendChild(bar);
