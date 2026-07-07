@@ -1,8 +1,8 @@
 # Proposal: Pushover retry policy — 429 is transient, not settled
 
-- **Date:** 2026-07-06 (rev. 3 — addresses Codex review round 2; see §10 revision log)
+- **Date:** 2026-07-06 (rev. 4 — addresses Codex review round 3; see §10 revision log)
 - **Status:** Draft for review (audit F4 follow-up)
-- **Related:** `IMPLEMENTATION_LOG.md` Session 8 (2026-06-21, the Pushover cancel 404 loop fix that introduced the current rule); `ALERT_DEDUPLICATION_PROPOSAL.md` §6; `PR_REVIEW_PUSHBACK.md` P3; `CODEBASE_REVIEW.md` (supervised-restart deployment, executive summary); the audit-F4 wire-layer test plan (tracked out of repo — the case IDs referenced below are described inline in §6). All code references verified against `main` @ `5fd2142`.
+- **Related:** `IMPLEMENTATION_LOG.md` Session 8 (2026-06-21, the Pushover cancel 404 loop fix that introduced the current rule); `ALERT_DEDUPLICATION_PROPOSAL.md` §6 and "Choosing `retry`"; `PR_REVIEW_PUSHBACK.md` P3; `CODEBASE_REVIEW.md` (supervised-restart deployment, executive summary); the audit-F4 wire-layer test plan (tracked out of repo — the case IDs referenced below are described inline in §6). All code references verified against `main` @ `5fd2142`.
 
 ---
 
@@ -39,9 +39,11 @@ exist" — 404/410 carry that meaning.
   retries — deliberately (`PR_REVIEW_PUSHBACK.md` P3). It is _not_ part of this proposal.
 
 **Blast radius if it ever fires:** after a recovery-triggered cancel hits a 429, the user keeps
-receiving emergency re-deliveries every `emergency_retry` (120 s) until manual ack or
-`emergency_expire` (≤ 3 h). Bounded, but it is exactly the annoyance `cancel()` exists to
-prevent.
+receiving emergency re-deliveries every `emergency_retry` (120 s) until manual ack or the end of
+the redelivery window — `min(emergency_expire, emergency_retry × 50)`, ~100 minutes at the
+default `retry=120`, since Pushover caps emergency redelivery at 50 retries
+(`ALERT_DEDUPLICATION_PROPOSAL.md`, "Choosing `retry`"). Bounded, but it is exactly the
+annoyance `cancel()` exists to prevent.
 
 ## 3. Proposed contract
 
@@ -68,7 +70,7 @@ speculative. One status, one reason.
 Making anything transient in `cancel()` requires the retries it feeds to be bounded — that is
 §4, the second half of this proposal.
 
-## 4. Boundedness: a persisted cancel deadline (rev. 3)
+## 4. Boundedness: a persisted cancel deadline (rev. 3, tightened in rev. 4)
 
 Two designs have been withdrawn on review:
 
@@ -82,14 +84,29 @@ Two designs have been withdrawn on review:
   minutes, abandoning a recoverable network/5xx outage *inside* the redelivery window — a
   regression from today's keep-retrying behavior.
 
-**Design: park each receipt with an absolute deadline.** `pending_cancel` becomes
-`dict[str, float]` mapping receipt → deadline (epoch seconds), computed at park time in
-`_close_emergency` from fields the incident already carries:
+**Design: park each receipt with an absolute deadline.** Redelivery for a receipt ends at
+`min(expire, retry × 50)` after the send — Pushover caps emergency redelivery at **50 retries**
+regardless of `expire` (round 3, P2; the repo already documents this window in
+`ALERT_DEDUPLICATION_PROPOSAL.md`, "Choosing `retry`": ~100 minutes at the default `retry=120`,
+not the full 3 h `expire`). `pending_cancel` becomes `dict[str, float]` mapping receipt →
+deadline (epoch seconds), computed at park time in `_close_emergency` from fields the incident
+carries:
 
 ```python
-deadline = incident["opened_at"] + incident["expire"]   # when redelivery stops
-self.pending_cancel[receipt] = deadline
+PUSHOVER_MAX_RETRIES = 50  # server-side cap on emergency redeliveries (protocol constant)
+
+# at park time in _close_emergency():
+retry = incident.get("retry", self.config.emergency_retry)
+window = min(incident["expire"], retry * PUSHOVER_MAX_RETRIES)
+self.pending_cancel[receipt] = incident["opened_at"] + window
 ```
+
+For this, `retry` joins `expire` as a field stored on the incident at send time
+(`incident_manager.py:324-328` and the re-raise path at `410-413`) — same pattern, same reason:
+the deadline must reflect the `retry` the receipt was actually sent with, not whatever the
+config says at park time after a mid-incident edit and restart. The `.get` fallback covers
+incidents persisted before the field existed (additive; no migration of the `incidents` dict
+needed).
 
 `retry_pending_cancels` then retries every receipt still inside its window and abandons the
 rest:
@@ -105,30 +122,32 @@ for receipt, deadline in list(self.pending_cancel.items()):
 
 Why this is the right bound:
 
-- **It matches the useful cancellation window exactly.** `cancel()`'s only purpose is stopping
-  redelivery _early_; Pushover stops redelivery at `opened_at + expire` on its own. Every retry
-  inside the window is useful (a recovered outage still silences the alert); every retry past it
-  is worthless. Nothing of value is ever abandoned early, at any poll cadence.
+- **It matches the useful cancellation window.** `cancel()`'s only purpose is stopping
+  redelivery _early_; Pushover stops on its own at `min(expire, retry × 50)` after the send.
+  Every retry inside the window is useful (a recovered outage still silences the alert); every
+  retry past it is worthless. Nothing of value is ever abandoned early, at any poll cadence.
 - **It survives restarts.** The deadline is an absolute timestamp persisted with the receipt in
   the state file, so supervisor restart loops resume the same bounded window instead of
   restarting a counter.
 - **It is failure-class-independent** — it bounds 429, 5xx, and network failures alike, closing
   the pre-existing latent unbounded path for persistent 5xx along with the new one.
-- **No tunable.** The rev. 2 `CANCEL_RETRY_LIMIT` constant (and its open question) disappears;
-  the bound derives from configuration that already exists (`emergency_expire`, stored
-  per-incident at `incident_manager.py:412`, so mid-incident config changes don't skew it).
+- **No tunable.** The bound derives from configuration that already exists (`emergency_expire`
+  and `emergency_retry`, both stored per-incident at send time) plus one protocol constant
+  (`PUSHOVER_MAX_RETRIES = 50`, beside `QUOTA_FLOOR`). Rev. 2's `CANCEL_RETRY_LIMIT` tunable and
+  its open question are gone.
 
 **State-schema migration (small, one-time).** `_load` gains a shim: if the stored
 `pending_cancel` is the old `list[str]` shape, each receipt is migrated with a fresh
-`deadline = clock() + config.emergency_expire` — generous (one full expire window from load) but
-bounded; the new `dict` shape round-trips through `_save`/`_load` unchanged. Rev. 2 avoided this
-migration for simplicity; round 2 established that correctness requires it (restart survival +
-cadence independence), and the shim is a few lines.
+`deadline = clock() + min(config.emergency_expire, config.emergency_retry × 50)` — generous
+(one full window from load) but bounded; the new `dict` shape round-trips through
+`_save`/`_load` unchanged. Rev. 2 avoided this migration for simplicity; round 2 established
+that correctness requires it (restart survival + cadence independence), and the shim is a few
+lines.
 
-Residual imprecision, accepted: the local clock and Pushover's expire countdown can skew by
+Residual imprecision, accepted: the local clock and Pushover's redelivery countdown can skew by
 seconds, so the last scheduled redelivery near the window's edge may or may not be preventable.
-With a 120 s `emergency_retry` cadence this is at most one nag that expiry was about to stop
-anyway; not worth a grace margin.
+With a 120 s `emergency_retry` cadence this is at most one nag that the cap or expiry was about
+to stop anyway; not worth a grace margin.
 
 ## 5. Edge cases
 
@@ -168,9 +187,14 @@ wire count; `IncidentManager` takes an injectable `clock`, so all of these are d
   on every poll while `clock() < deadline` — regardless of how many polls occur (the fast-poll
   case from round 2) — and dropped with one WARNING on the first poll at/after the deadline,
   without a wire call.
+- **Deadline formula:** the parked deadline is `opened_at + min(expire, retry × 50)` — one case
+  where `retry × 50 < expire` (the default config: 6 000 s vs 10 800 s) and one where `expire`
+  is the binding term; plus the fallback when a pre-rev-4 persisted incident carries no
+  `"retry"` key.
 - **Restart/load:** (a) old-format `list[str]` state migrates on `_load` to
-  `clock() + emergency_expire` deadlines; (b) the new `dict[str, float]` shape round-trips
-  through `_save`/`_load`, so a restart resumes the same absolute window.
+  `clock() + min(emergency_expire, emergency_retry × 50)` deadlines; (b) the new
+  `dict[str, float]` shape round-trips through `_save`/`_load`, so a restart resumes the same
+  absolute window.
 - **Settlement still wins:** a cancel that succeeds (or settles via 4xx) before the deadline
   removes the receipt with no abandonment warning.
 
@@ -178,12 +202,15 @@ wire count; `IncidentManager` takes an injectable `clock`, so all of these are d
 
 - **One small state-schema migration:** `pending_cancel` changes from `list[str]` to
   `dict[str, float]` (receipt → deadline), with a one-time load shim for the old shape (§4).
-  **No config** (the bound derives from the existing `emergency_expire`), no API-visible change.
-  Behavior differs only while Pushover is rate-limiting or persistently failing.
+  The `incidents` dict additionally gains a `"retry"` field at send time — additive with a
+  `.get` fallback, no migration needed. **No config** (the bound derives from the existing
+  `emergency_expire`/`emergency_retry` plus the `PUSHOVER_MAX_RETRIES = 50` protocol constant),
+  no API-visible change. Behavior differs only while Pushover is rate-limiting or persistently
+  failing.
 - **Sequencing recommendation: bundle with the F4 test implementation in one session.** The wire
   tests don't exist yet — landing this first means C2/C2b/C4 encode the _new_ contract from day
   one instead of being written twice. Effort as a bundle rider: **S** (~4 lines in
-  `notifier_client.py`, ~15 lines in `incident_manager.py` including the shim, plus the tests
+  `notifier_client.py`, ~18 lines in `incident_manager.py` including the shim, plus the tests
   above).
 - **Docs:** supersedes the Session 8 "all 4xx settle" decision — one line in the PR description
   and in the `IMPLEMENTATION_LOG.md` closing entry (Backlog item, audit F9). No edit needed to
@@ -193,8 +220,8 @@ wire count; `IncidentManager` takes an injectable `clock`, so all of these are d
 ## 8. Open questions for the review round
 
 1. Accept 429 → transient as scoped (single status, `cancel()` only)? **Recommend yes.**
-2. Log level for the 429 line — WARNING once per poll, bounded by the §4 deadline
-   (≤ `emergency_expire` worth of polls per receipt), or prefer INFO? **Recommend WARNING**
+2. Log level for the 429 line — WARNING once per poll, bounded by the §4 deadline (≤ one
+   redelivery window worth of polls per receipt), or prefer INFO? **Recommend WARNING**
    (an operator mid-rate-limit should see it).
 3. Bundle with F4's test session vs separate PR? **Recommend bundle** (§7).
 4. ~~Cutoff shape: in-memory counter vs persisted deadlines?~~ **Resolved in rev. 3 (round 2,
@@ -202,12 +229,16 @@ wire count; `IncidentManager` takes an injectable `clock`, so all of these are d
 
 ## 9. Verified Pushover API behavior
 
-Checked against the public docs during review round 1 (2026-07-06):
+Checked against the public docs during review rounds 1 and 3 (2026-07-06):
 
 - Receipts remain queryable for up to **1 week** after the notification; the documented receipt
   fields include `expired` and `expires_at` ("when the notification will stop being retried").
   Nothing documents what `cancel` returns for an expired receipt — the design no longer relies
   on it (§4).
+- Emergency redelivery is capped at **50 retries** regardless of `expire`, so the effective
+  redelivery window is `min(expire, retry × 50)` — already documented in this repo
+  (`ALERT_DEDUPLICATION_PROPOSAL.md`, "Choosing `retry`") and folded into the §4 deadline in
+  rev. 4.
 - HTTP **429 is documented for message creation** once the monthly message limit is reached
   (resets on the 1st, 00:00 Central). No per-endpoint request limits are documented for the
   receipt endpoints beyond the receipt-poll pacing request ("no faster than once every 5
@@ -237,4 +268,13 @@ Sources: <https://pushover.net/api#limits>, <https://pushover.net/api/receipts>,
     fast-poll tests added to §6; rev. 2's open question §8.4 resolved; rev. 2's "no state
     migration" stance reversed — correctness requires the migration.
   - **P2 (PR description stale):** PR #17's body still described rev. 1 (quota-driven 429s, the
-    404 backstop, a ≤ 3 h warning window); rewritten to match this revision.
+    404 backstop, a ≤ 3 h warning window); rewritten to match rev. 3.
+- **rev. 4** (2026-07-06) — Codex review round 3, finding accepted:
+  - **P2 (deadline misses the 50-retry cap):** rev. 3's deadline (`opened_at + expire`)
+    overshot the useful cancellation window — Pushover caps emergency redelivery at 50 retries,
+    so the window is `min(expire, retry × 50)` (~100 min at the default `retry=120`, not 3 h),
+    as this repo already documented in `ALERT_DEDUPLICATION_PROPOSAL.md` ("Choosing `retry`").
+    Deadline tightened to `opened_at + min(expire, retry × PUSHOVER_MAX_RETRIES)`; `retry` is
+    now stored per-incident at send time alongside `expire` (with a `.get` fallback for
+    previously persisted incidents) so a mid-incident config edit plus restart cannot skew the
+    window; §2 blast radius, §6 tests, and §9 corrected accordingly.
