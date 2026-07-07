@@ -66,7 +66,9 @@ still looks like itself on first run.
 
 ### 3.3 State the 100-battle target
 
-Change the `Battles` column header to `Battles / 100`. One string; removes the
+Change the bar column header from `Progress` to `Progress to 100`. The raw
+`Battles` column keeps its name — finished counts run past 100 (106, 107, …),
+so a `/ 100` label there would read as wrong data. One string; removes the
 "what does the bar mean?" guess. (`FINISHED_THRESHOLD` is already the single
 source of truth server-side; interpolate it rather than hardcoding a second
 100 in the HTML if convenient.)
@@ -141,7 +143,7 @@ status page and a green light that lies.
 ### 4.1 Monitor side
 
 `IncidentManager` gains `record_poll()`: sets `last_poll_at = clock()` and
-saves. `run_task()` calls it **at the top of every poll, before the API call**
+saves. `do_task()` calls it **at the top of every poll, before the API call**
 — a poll that ends in `api_down`/`auth_expired` still proves the monitor is
 alive (the incident conveys the failure; the heartbeat conveys liveness).
 
@@ -163,8 +165,13 @@ alive (the incident conveys the failure; the heartbeat conveys liveness).
 - **Staleness rule:** `stale` when `now - last_poll_at >
   max(3 * polling_interval, 300)`. Three missed polls tolerates scheduler
   jitter; the 5-minute floor avoids flapping if someone sets a short interval.
-  `load_config()` is already called for the port; reading `polling_interval`
-  from the same config adds no new exposure (still never served raw).
+  **Keep `build_status` pure:** it currently takes only
+  `(database, state, now)` and must not call `load_config()` itself. `main()`
+  computes `stale_after_seconds = max(3 * polling_interval, 300)` once at
+  startup (from the same `load_config()` call that reads the port; the raw
+  value is still never served) and threads it through the handler into
+  `build_status(..., stale_after_seconds)`; unit tests pass explicit values,
+  keeping status derivation independent of the local config file.
   `last_poll_at` missing entirely (pre-PR-2 state file) → `stale: false`,
   render nothing new — graceful for mixed versions.
 - **Health precedence:** stale monitor **overrides everything** — when the
