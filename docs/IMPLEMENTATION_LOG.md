@@ -69,6 +69,22 @@ have all landed with tests (93 passing) and clean Black/mypy.
 - **Decisions made in-session:** <small calls not covered by the docs>
 -->
 
+### 2026-10-04 — Session 10: transient Buckler failures (quiet logging + confirmed `api_down`)
+- **Branch / commits:** `claude/transient-http-502-errors-4148d0`; `457ef61` log upstream Buckler failures without a traceback, `5fe4cb7` open `api_down` only after a second consecutive failed poll; this log entry follows on the same branch.
+- **Done:** Two changes prompted by a one-off HTTP 502 that printed a traceback and paged twice.
+  - **Logging (`task.py`):** `do_task` now catches `requests.RequestException` (HTTP errors, connection errors, timeouts) and logs one WARNING line, `Buckler poll failed (<class>): <detail>`, with no traceback. The generic `except Exception` handler keeps `logger.exception`. Connection errors and timeouts previously fell through to that generic "completely borked" branch.
+  - **Paging (`incident_manager.py`):** `evaluate_api_down` opens the incident only on the second consecutive failed poll. A single failed poll sends nothing, opens nothing, and logs one INFO line when the next poll succeeds. Recorded as decision 7 in `ALERT_DEDUPLICATION_PROPOSAL.md` §11, with the §7 row amended.
+- **Verified by:** `ruff format --check .` (clean), `ruff check .` (clean), `mypy` (no issues), `pytest` → **138 passed** (was 129; +9). The tests that encode the new behavior were first run against the previous code and failed there (3 logging cases, 10 paging cases); two guard tests, the unexpected-failure traceback and recovery after a restart, pass on both. A scripted replay through `do_task` with `app.py`'s log format showed one WARNING and zero pushes for a single 502, and one `priority=1` push plus one recovery push ("recovered after 3 minutes") for three consecutive 502s. The gates were run with the main checkout's venv interpreter (`python -m …`) rather than `uv run`, which currently refuses to start on this machine: installed uv is 0.12.13 and `[tool.uv] required-version` pins `==0.11.26`.
+- **Not done / carried over:**
+  - The generic handler's message still reads "This isn't an HTTPError? Capcom Buckler website must be completely borked." It now only fires for non-request failures (a schema change or a bug), so the wording is stale. Left alone because it is also the push text.
+  - The `auth_expired` branch still logs a traceback for an expected condition.
+  - The local uv / `required-version` mismatch above.
+- **Decisions made in-session:**
+  - **The unconfirmed run lives in memory, not in `notification_state.json`.** A persisted value could outlive the run it describes and let one later failure open the incident unconfirmed; a restart only costs one extra poll.
+  - **An auth rejection ends the run.** Buckler answered, so failed polls either side of it are not consecutive. Without this, a pending failure could sit through a long `auth_expired` episode and be "confirmed" hours later.
+  - **`opened_at` is backdated to the first failed poll** instead of adding a second timestamp. Nothing else reads `api_down`'s `opened_at`, and it makes the recovery message report the whole outage.
+  - **Unexpected (non-request) failures go through the same confirmation.** They share `evaluate_api_down`, and a schema change or bug persists across polls, so it still pages one poll later.
+
 ### 2026-07-06 — Session 9: Pushover cancel retry policy
 - **Branch / commits:** `codex/pushover-retry-policy`; `ad7ee4c` implement 429-transient cancel policy; this log entry follows on the same branch.
 - **Done:** Implemented `docs/PUSHOVER_RETRY_POLICY_PROPOSAL.md` rev. 4 (proposal merged via PR #17 at `623823b`; source proposal branch commit `6958f4a`). `PushoverClient.cancel()` now treats HTTP 429 as transient (returns `False`, logs one WARNING) while preserving the settled handling for other 4xx responses. `IncidentManager.pending_cancel` now persists as `dict[str, float]` (receipt -> absolute cancel deadline) instead of `list[str]`, with deadlines computed as `opened_at + min(expire, retry * 50)`. Emergency incidents now persist their send-time `retry` alongside `expire`; legacy incidents without `retry` fall back to the current config. Old list-shaped `pending_cancel` state migrates on load to one fresh bounded window and is saved back in the new shape.
