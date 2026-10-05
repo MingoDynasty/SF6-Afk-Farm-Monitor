@@ -351,6 +351,8 @@ PAGE_HTML = """<!DOCTYPE html>
   :root[data-theme="dark"] .sun-icon { display: block; }
   .health { display: inline-block; font-weight: 600; padding: 0.35rem 0.8rem;
             border-radius: 999px; font-size: 0.95rem; }
+  /* The rule above would otherwise override the hidden attribute. */
+  .health[hidden] { display: none; }
   .health.ok { background: var(--health-ok-bg); color: var(--health-ok-text); }
   .health.stuck { background: var(--health-stuck-bg);
                   color: var(--health-stuck-text); }

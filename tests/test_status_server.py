@@ -118,6 +118,14 @@ def test_status_page_includes_pr1_ux_hooks() -> None:
     assert "innerHTML" not in PAGE_HTML
 
 
+def test_hidden_pill_is_not_displayed() -> None:
+    # The swap pill is hidden with the `hidden` attribute, which the author
+    # rule `.health { display: inline-block }` would otherwise override,
+    # leaving an empty pill on screen whenever no swap is needed.
+    assert 'id="swap-needed" class="health stuck" role="status" hidden' in PAGE_HTML
+    assert ".health[hidden] { display: none; }" in PAGE_HTML
+
+
 def test_status_page_includes_in_progress_hooks() -> None:
     assert 'if (character.in_progress) tr.classList.add("in-progress")' in PAGE_HTML
     assert "tbody tr.in-progress td" in PAGE_HTML
