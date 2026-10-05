@@ -142,7 +142,7 @@ A small `notification_state.json` (separate file — keep `database.json` purely
 | Alert | Today | Proposed |
 |---|---|---|
 | Stuck farm | 1 msg/poll while stuck | **Incident**, emergency priority (actionable and time-sensitive — the entire point of the app) |
-| Capcom API down / unreachable | 1 msg/poll while down | **Incident, one-shot `priority=1` (high)** — *decided 2026-06-11*: the user can't fix Capcom, so nagging until ack would be noise. Open → one message; close on first successful poll, optionally with a "recovered after X" courtesy message. |
+| Capcom API down / unreachable | 1 msg/poll while down | **Incident, one-shot `priority=1` (high)** — *decided 2026-06-11*: the user can't fix Capcom, so nagging until ack would be noise. Open → one message; close on first successful poll, optionally with a "recovered after X" courtesy message. *Amended 2026-10-04:* the incident opens on the **second consecutive failed poll**, not the first (§11, decision 7). |
 | Buckler cookies expired (review M3, once implemented) | — (misreported today) | **Incident**, emergency or high — actionable (refresh cookies) and blocks all monitoring. |
 | Master color finished (count crosses 100) | Intentionally re-fires every match past 100 (commit `ffb650b`) as a "swap characters!" nag | **Incident, emergency priority** — *decided 2026-06-11*: same shape as stuck-farm ("there is an issue, no progress until the user fixes it"). One nagging message replaces N quota-burning messages. **Resolution condition: a *different* character's count starts increasing** (i.e., the swap actually happened) — continued matches on the finished character keep the incident OPEN and silent (modulo re-arm). Scheduled for phase 2 since it replaces deliberate current behavior. |
 
@@ -211,6 +211,15 @@ Resolved 2026-06-12 with the author:
 
 5. ~~Re-arm after ack~~ — **decided:** phase 1, default on at **600 s (10 min)**, framed as an on-call ack-timeout. The author first proposed re-paging ASAP after an unresolved ack (rejected — defeats the ack; reasoning in §4), then chose 10 min over the reviewer's 15 (trade-off documented in §4; tunable via config).
 6. ~~`emergency_retry` default~~ — **decided:** 120 s (coverage over intensity given the 50-retry cap).
+
+Resolved 2026-10-04 with the author:
+
+7. ~~API-down open threshold~~ — **decided:** `api_down` opens only on the **second consecutive failed poll**. A single failed poll logs one WARNING line and sends nothing. This amends the trigger in decision 1 only; the `priority=1` one-shot and the courtesy recovery message are unchanged.
+   - **Evidence:** all 26 `api_down` incidents between 2026-06-21 and 2026-10-04 closed on the very next poll. Each was a one-off 5xx from Buckler's gateway, cost two pushes, and opened at `priority=1`, which bypasses Pushover quiet hours (§5).
+   - **Cost:** a real outage is announced one polling interval later, for an alert the user cannot act on.
+   - **State:** the unconfirmed run of failed polls is held in memory only. A restart costs one extra poll of confirmation; a persisted value could go stale and let one later failure open the incident unconfirmed. An auth rejection is an answer from Buckler, so it ends the run.
+   - **Recovery message:** measures from the first failed poll, so it reports the whole outage.
+   - **Rejected:** an in-poll retry (no data on blips shorter than one polling interval, and a missed poll loses nothing because `database.json` is not written on failure) and a time-based threshold (equivalent to the count at the default cadence, plus a tunable with no natural value).
 
 No open questions remain in this proposal.
 
