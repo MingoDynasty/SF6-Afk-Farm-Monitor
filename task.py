@@ -36,6 +36,12 @@ AUTH_EXPIRED_MESSAGE = (
     "then restart the monitor. All monitoring is blind until then."
 )
 
+UNEXPECTED_FAILURE_MESSAGE = (
+    "Unexpected error while polling Buckler. This was not a network "
+    "failure, so the response format may have changed or the monitor "
+    "has a bug. Check logs/info.log."
+)
+
 
 def write_to_database(
     data: Mapping[str, int], database_filename: str | Path = DATABASE_FILENAME
@@ -98,10 +104,12 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
 
     try:
         win_rate_response = get_character_win_rates(config)
-    except AuthExpiredError:
+    except AuthExpiredError as exc:
         # Expired cookies are actionable and blind all monitoring; an emergency
-        # incident nags until the user refreshes them (review finding M3).
-        logger.exception(AUTH_EXPIRED_MESSAGE)
+        # incident nags until the user refreshes them (review finding M3). The
+        # condition is already classified, so it gets one line, not a traceback;
+        # the exception text says which signal fired.
+        logger.error("%s (%s)", AUTH_EXPIRED_MESSAGE, exc)
         incident_manager.evaluate_auth_expired(
             active=True, build_message=lambda: AUTH_EXPIRED_MESSAGE
         )
@@ -117,9 +125,12 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
         )
         return
     except Exception:
-        message = "Caught generic Exception. This isn't an HTTPError? Capcom Buckler website must be completely borked."
-        logger.exception(message)
-        incident_manager.evaluate_api_down(active=True, down_message=message)
+        # Request failures were handled above, so this is a response that no
+        # longer validates or a bug here; the traceback says which.
+        logger.exception(UNEXPECTED_FAILURE_MESSAGE)
+        incident_manager.evaluate_api_down(
+            active=True, down_message=UNEXPECTED_FAILURE_MESSAGE
+        )
         return
 
     # The poll succeeded: clear any open api_down / auth_expired incident.

@@ -437,6 +437,37 @@ def test_upstream_failure_logs_one_warning_without_traceback(
     assert str(exception) in task_records[0].getMessage()
 
 
+def test_auth_expiry_logs_one_error_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    exception = AuthExpiredError(
+        "Buckler returned HTTP 403 (session cookies expired?)."
+    )
+
+    def fake_get_character_win_rates(config: ConfigData) -> WinRateResponse:
+        raise exception
+
+    monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
+
+    with caplog.at_level(logging.DEBUG):
+        task.do_task(config_data, manager, tmp_path / "database.json")
+
+    task_records = [record for record in caplog.records if record.name == "task"]
+    assert len(task_records) == 1
+    assert task_records[0].levelno == logging.ERROR
+    assert task_records[0].exc_info is None
+    assert task.AUTH_EXPIRED_MESSAGE in task_records[0].getMessage()
+    assert str(exception) in task_records[0].getMessage()
+
+
 def test_unexpected_failure_still_logs_a_traceback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -461,6 +492,41 @@ def test_unexpected_failure_still_logs_a_traceback(
     assert len(task_records) == 1
     assert task_records[0].levelno == logging.ERROR
     assert task_records[0].exc_info is not None
+
+
+def test_unexpected_failure_message_is_logged_and_pushed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+
+    def fake_get_character_win_rates(config: ConfigData) -> WinRateResponse:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
+
+    with caplog.at_level(logging.DEBUG):
+        task.do_task(config_data, manager, database_path)
+        fake_clock.advance(60)
+        task.do_task(config_data, manager, database_path)
+
+    task_records = [record for record in caplog.records if record.name == "task"]
+    assert [record.getMessage() for record in task_records] == [
+        task.UNEXPECTED_FAILURE_MESSAGE,
+        task.UNEXPECTED_FAILURE_MESSAGE,
+    ]
+    assert all(record.exc_info is not None for record in task_records)
+    # The second consecutive failure confirms the incident: one push, same text.
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0]["priority"] == 1
+    assert fake_client.sent[0]["message"] == task.UNEXPECTED_FAILURE_MESSAGE
 
 
 def test_auth_expired_opens_emergency_incident(
