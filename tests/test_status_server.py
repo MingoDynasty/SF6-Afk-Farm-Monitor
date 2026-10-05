@@ -29,11 +29,21 @@ def _database(**counts: int) -> dict[str, int]:
     return dict(counts)
 
 
-def _state(incidents: dict | None = None, last_change_at: float | None = NOW) -> dict:
+def _state(
+    incidents: dict | None = None,
+    last_change_at: float | None = NOW,
+    last_increased_characters: object = None,
+) -> dict:
     state: dict = {"incidents": incidents or {}, "pending_cancel": []}
     if last_change_at is not None:
         state["last_change_at"] = last_change_at
+    if last_increased_characters is not None:
+        state["last_increased_characters"] = last_increased_characters
     return state
+
+
+def _in_progress_names(status: dict) -> list[str]:
+    return [row["name"] for row in status["characters"] if row["in_progress"]]
 
 
 @contextmanager
@@ -108,6 +118,56 @@ def test_status_page_includes_pr1_ux_hooks() -> None:
     assert "innerHTML" not in PAGE_HTML
 
 
+def test_hidden_pill_is_not_displayed() -> None:
+    # The swap pill is hidden with the `hidden` attribute, which the author
+    # rule `.health { display: inline-block }` would otherwise override,
+    # leaving an empty pill on screen whenever no swap is needed.
+    assert 'id="swap-needed" class="health stuck" role="status" hidden' in PAGE_HTML
+    assert ".health[hidden] { display: none; }" in PAGE_HTML
+
+
+def test_header_actions_can_shrink_and_wrap() -> None:
+    # At phone width the swap pill makes the actions wider than the screen.
+    # They must be allowed to shrink (and so wrap) once the title has given up
+    # all it can, or the health pill and theme toggle are pushed off-screen.
+    assert ".header-actions { align-items: center; display: flex; flex: 0 1 auto;" in (
+        PAGE_HTML
+    )
+    assert "flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }" in PAGE_HTML
+    assert "h1 { flex: 1 1 0%; font-size: 1.3rem; margin: 0; }" in PAGE_HTML
+
+
+def test_status_page_includes_in_progress_hooks() -> None:
+    assert 'if (character.in_progress) tr.classList.add("in-progress")' in PAGE_HTML
+    assert "tbody tr.in-progress td" in PAGE_HTML
+    # Every row gets an icon slot left of the name, so the names stay aligned.
+    assert 'icon.className = "status-icon"' in PAGE_HTML
+    assert "name.append(icon, character.name)" in PAGE_HTML
+    # Without this a name wraps away from its slot at phone width.
+    assert "td.name { white-space: nowrap; }" in PAGE_HTML
+    # Both status icons are inline SVG templates in one stroke style, and each
+    # is named for screen readers because it carries no text.
+    assert '<template id="icon-finished">' in PAGE_HTML
+    assert '<template id="icon-in-progress">' in PAGE_HTML
+    assert 'finished: { template: "icon-finished", label: "Finished" }' in PAGE_HTML
+    assert (
+        'inProgress: { template: "icon-in-progress", label: "In progress" }'
+        in PAGE_HTML
+    )
+    assert 'icon.setAttribute("aria-label", status.label)' in PAGE_HTML
+    # A row that is both finished and in progress shows the in-progress icon.
+    assert "character.in_progress ? STATUS_ICONS.inProgress :" in PAGE_HTML
+    assert "prefers-reduced-motion: reduce" in PAGE_HTML
+    assert "tr.in-progress .fill { background: var(--in-progress-fill); }" in PAGE_HTML
+    # Each in-progress rule comes after its finished counterpart, so a finished
+    # row that is still gaining takes the in-progress colors.
+    for finished_rule, in_progress_rule in [
+        ("tr.finished .fill {", "tr.in-progress .fill {"),
+        ("tr.finished .status-icon {", "tr.in-progress .status-icon {"),
+    ]:
+        assert PAGE_HTML.index(finished_rule) < PAGE_HTML.index(in_progress_rule)
+
+
 # -- character rows / sorting ------------------------------------------------
 
 
@@ -162,6 +222,58 @@ def test_non_farmable_characters_excluded_from_rows_and_tally() -> None:
     assert names == ["Ken", "Luke"]
     assert status["total_count"] == 2
     assert status["finished_count"] == 1
+
+
+# -- in-progress highlight ---------------------------------------------------
+
+
+def test_in_progress_marks_the_character_that_last_gained() -> None:
+    # Mai has the higher count, but the monitor last saw Elena gain.
+    database = _database(Elena=15, Mai=92, Luke=103)
+    state = _state(last_increased_characters=["Elena"])
+    status = build_status(database, state, NOW)
+    assert _in_progress_names(status) == ["Elena"]
+
+
+def test_in_progress_does_not_change_the_row_order() -> None:
+    # Highlight only, by decision: the marked row is not pinned to the top.
+    database = _database(Elena=15, Mai=92, Luke=103)
+    state = _state(last_increased_characters=["Elena"])
+    status = build_status(database, state, NOW)
+    assert [row["name"] for row in status["characters"]] == ["Mai", "Elena", "Luke"]
+
+
+def test_in_progress_marks_every_character_in_a_tied_poll() -> None:
+    # Two characters gained on one poll (the monitor was off across a swap):
+    # both are marked until the next match settles it.
+    database = _database(Ingrid=59, Ken=3, Ryu=101)
+    state = _state(last_increased_characters=["Ryu", "Ingrid"])
+    status = build_status(database, state, NOW)
+    assert _in_progress_names(status) == ["Ingrid", "Ryu"]
+
+
+def test_in_progress_never_marks_a_non_farmable_character() -> None:
+    database = {"Alex": 73, "Random": 1, "Ken": 3}
+    state = _state(last_increased_characters=["Alex", "Random"])
+    status = build_status(database, state, NOW)
+    assert [row["name"] for row in status["characters"]] == ["Alex", "Ken"]
+    assert _in_progress_names(status) == ["Alex"]
+
+
+def test_in_progress_marks_nothing_when_missing_or_malformed() -> None:
+    states = [
+        _state(),
+        _state(last_increased_characters=[]),
+        # A bare string must not mark a row by substring or by character.
+        _state(last_increased_characters="Elena"),
+        _state(last_increased_characters={"Elena": 1}),
+        _state(last_increased_characters=[1, None, ["Elena"]]),
+        None,
+        ["not", "a", "dict"],
+    ]
+    for state in states:
+        status = build_status(_database(Elena=15, E=1), state, NOW)
+        assert _in_progress_names(status) == []
 
 
 # -- health derivation -------------------------------------------------------

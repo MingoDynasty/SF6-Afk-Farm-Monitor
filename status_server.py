@@ -11,8 +11,9 @@ It serves two endpoints:
 
 - ``GET /api/status`` - the assembled state as JSON.
 - ``GET /`` - a single self-contained HTML page (inline CSS/JS) that re-fetches
-  ``/api/status`` every 30 s and renders the character table, finished tally,
-  staleness line, and health line. No build step, no framework.
+  ``/api/status`` every 30 s and renders the character table (highlighting the
+  character being farmed), finished tally, staleness line, and health line. No
+  build step, no framework.
 
 Security: the page is LAN-only by design, no auth (section 5). It serves *only* the
 two ``data/`` files; it never exposes ``config.toml`` contents. ``load_config``
@@ -83,10 +84,25 @@ def load_status_data(
     return _read_json(database_path), _read_json(state_path)
 
 
-def _build_character_rows(database: Any) -> list[dict[str, Any]]:
+def _parse_in_progress(state: Any) -> frozenset[str]:
+    """Names the monitor saw gain a battle on its last gaining poll. Empty when
+    the key is missing (a state file from before it existed) or malformed."""
+    if not isinstance(state, dict):
+        return frozenset()
+    raw = state.get("last_increased_characters")
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(name for name in raw if isinstance(name, str))
+
+
+def _build_character_rows(
+    database: Any, in_progress: frozenset[str]
+) -> list[dict[str, Any]]:
     """Turn the ``{name: battle_count}`` database into display rows, sorted
-    unfinished-first then by descending battle count (the in-progress character
-    surfaces at the top), then finished characters alphabetically."""
+    unfinished-first then by descending battle count, then finished characters
+    alphabetically. Rows named in ``in_progress`` are flagged for the page to
+    highlight; the flag does not affect the order (highlight only, by
+    decision), and a poll where several characters gained flags all of them."""
     if not isinstance(database, dict):
         return []
     rows: list[dict[str, Any]] = []
@@ -108,6 +124,7 @@ def _build_character_rows(database: Any) -> list[dict[str, Any]]:
                 # 0-100 fill for the progress bar; finished characters clamp to
                 # 100 even though their raw count can exceed it.
                 "progress": max(0, min(battle_count, FINISHED_THRESHOLD)),
+                "in_progress": str(name) in in_progress,
             }
         )
     rows.sort(
@@ -188,7 +205,7 @@ def build_status(database: Any, state: Any, now: float) -> dict[str, Any]:
     """Assemble the ``/api/status`` payload from the (possibly missing/corrupt)
     parsed contents of the two state files. Never raises on bad input - missing
     or malformed data degrades to empty rows / healthy-unknown."""
-    characters = _build_character_rows(database)
+    characters = _build_character_rows(database, _parse_in_progress(state))
     finished_count = sum(1 for row in characters if row["finished"])
 
     last_change_at = _parse_last_change_at(state)
@@ -222,9 +239,10 @@ FAVICON_HREF = (
 )
 
 # Single self-contained page. Vanilla JS re-fetches /api/status every 30 s and
-# re-renders; character names are written via textContent (never innerHTML), so
-# nothing from the data files can inject markup. Kept ASCII-only (the checkmark
-# is a CSS \2713 escape) so the source has no encoding surprises.
+# re-renders; character names are written as text (never innerHTML), so
+# nothing from the data files can inject markup. Kept ASCII-only (icons are
+# inline SVG, the same as the theme toggle) so the source has no encoding
+# surprises.
 PAGE_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -263,6 +281,10 @@ PAGE_HTML = """<!DOCTYPE html>
     --fill: #1976d2;
     --finished-fill: #2e7d32;
     --finished-text: #2e7d32;
+    --in-progress-fill: #7b1fa2;
+    --in-progress-text: #7b1fa2;
+    --in-progress-bg: #f3e5f5;
+    --in-progress-bar-bg: #e1bee7;
     --footer: #666;
     --toggle-bg: #fff;
     --toggle-border: #c9ced6;
@@ -290,6 +312,10 @@ PAGE_HTML = """<!DOCTYPE html>
     --fill: #1971c2;
     --finished-fill: #2b8a3e;
     --finished-text: #8ce99a;
+    --in-progress-fill: #be4bdb;
+    --in-progress-text: #e599f7;
+    --in-progress-bg: #2a1e33;
+    --in-progress-bar-bg: #453253;
     --footer: #909296;
     --toggle-bg: #25262b;
     --toggle-border: #373a40;
@@ -310,9 +336,12 @@ PAGE_HTML = """<!DOCTYPE html>
   .wrap { max-width: 720px; margin: 0 auto; padding: 1.25rem 1rem; }
   .header { display: flex; align-items: center; justify-content: space-between;
             gap: 1rem; margin-bottom: 0.35rem; }
-  .header-actions { align-items: center; display: flex; flex: 0 0 auto;
+  .header-actions { align-items: center; display: flex; flex: 0 1 auto;
                     flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }
-  h1 { font-size: 1.3rem; margin: 0; }
+  /* The title takes whatever the actions leave, down to its longest word.
+     Only past that do the actions shrink and wrap, so a wide swap pill on a
+     phone wraps instead of pushing the other pills off-screen. */
+  h1 { flex: 1 1 0%; font-size: 1.3rem; margin: 0; }
   .theme-toggle { border: 1px solid var(--toggle-border);
                   background: var(--toggle-bg); color: var(--text);
                   border-radius: 999px; cursor: pointer; flex: 0 0 auto;
@@ -326,6 +355,8 @@ PAGE_HTML = """<!DOCTYPE html>
   :root[data-theme="dark"] .sun-icon { display: block; }
   .health { display: inline-block; font-weight: 600; padding: 0.35rem 0.8rem;
             border-radius: 999px; font-size: 0.95rem; }
+  /* The rule above would otherwise override the hidden attribute. */
+  .health[hidden] { display: none; }
   .health.ok { background: var(--health-ok-bg); color: var(--health-ok-text); }
   .health.stuck { background: var(--health-stuck-bg);
                   color: var(--health-stuck-text); }
@@ -354,7 +385,28 @@ PAGE_HTML = """<!DOCTYPE html>
          overflow: hidden; }
   .fill { height: 100%; background: var(--fill); transition: width 0.3s; }
   tr.finished .fill { background: var(--finished-fill); }
-  tr.finished td.name::after { content: " \\2713"; color: var(--finished-text); }
+  /* Every row has the icon slot, so names line up with or without an icon.
+     nowrap keeps a name from wrapping away from its slot on a narrow screen. */
+  td.name { white-space: nowrap; }
+  .status-icon { display: inline-block; height: 1em; margin-right: 0.3em;
+                 vertical-align: -0.15em; width: 1em; }
+  .status-icon svg { display: block; height: 100%; width: 100%; }
+  tr.finished .status-icon { color: var(--finished-text); }
+  /* The in-progress rules follow the hover and finished rules and are equally
+     specific, so the tint survives hover and a finished row that is still
+     gaining takes the in-progress colors. */
+  tbody tr.in-progress td { background: var(--in-progress-bg); }
+  tr.in-progress td.name { box-shadow: inset 3px 0 0 var(--in-progress-fill);
+                           font-weight: 600; }
+  tr.in-progress .bar { background: var(--in-progress-bar-bg); }
+  tr.in-progress .fill { background: var(--in-progress-fill); }
+  tr.in-progress .status-icon { color: var(--in-progress-text); }
+  tr.in-progress .status-icon svg {
+    animation: progress-spin 1.2s linear infinite; }
+  @keyframes progress-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    tr.in-progress .status-icon svg { animation: none; }
+  }
   @media (max-width: 560px) {
     .header { align-items: flex-start; }
     .meta-row { display: block; margin-bottom: 0.5rem; }
@@ -405,12 +457,30 @@ PAGE_HTML = """<!DOCTYPE html>
     <tbody id="rows"></tbody>
   </table>
 </div>
+<!-- Row status icons, cloned into each row's icon slot. Same stroke style as
+     the theme toggle icons. -->
+<template id="icon-finished">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M5 12.5l4.5 4.5L19 7"></path>
+  </svg>
+</template>
+<template id="icon-in-progress">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 3a9 9 0 1 0 9 9"></path>
+  </svg>
+</template>
 <script>
 const BASE_TITLE = "SF6 Afk Farm Monitor";
 const ALERT_TITLE_PREFIX = "\\u26A0 ";
 const HEALTH_CLASS = { OK: "ok", STUCK: "stuck", API_DOWN: "down",
                        AUTH_EXPIRED: "auth", UNKNOWN: "unknown" };
 const THEME_STORAGE_KEY = "sf6-status-theme";
+const STATUS_ICONS = {
+  finished: { template: "icon-finished", label: "Finished" },
+  inProgress: { template: "icon-in-progress", label: "In progress" },
+};
 let hasRenderedStatus = false;
 let stalenessClock = null;
 
@@ -554,11 +624,28 @@ function render(data) {
   }
   for (const character of data.characters) {
     const tr = document.createElement("tr");
-    if (character.finished) tr.className = "finished";
+    if (character.finished) tr.classList.add("finished");
+    if (character.in_progress) tr.classList.add("in-progress");
 
     const name = document.createElement("td");
     name.className = "name";
-    name.textContent = character.name;
+    const icon = document.createElement("span");
+    icon.className = "status-icon";
+    // The slot holds one icon: a finished row that is still gaining shows the
+    // in-progress one.
+    const status = character.in_progress ? STATUS_ICONS.inProgress :
+                   character.finished ? STATUS_ICONS.finished : null;
+    if (status) {
+      // Clone the svg alone, not the whitespace around it in the template.
+      const template = document.getElementById(status.template);
+      icon.appendChild(template.content.firstElementChild.cloneNode(true));
+      // The icon carries no text, so name it for screen readers and hover.
+      icon.setAttribute("role", "img");
+      icon.setAttribute("aria-label", status.label);
+      icon.title = status.label;
+    }
+    // A string argument becomes a text node, so the name is never parsed.
+    name.append(icon, character.name);
 
     const barCell = document.createElement("td");
     barCell.className = "bar-cell";

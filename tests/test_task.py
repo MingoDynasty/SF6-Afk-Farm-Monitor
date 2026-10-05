@@ -271,6 +271,94 @@ def test_count_change_resets_stuck_timer(
     assert STUCK_FARM not in manager.incidents
 
 
+def read_last_increased_characters(tmp_path: Path) -> list[str]:
+    state = json.loads((tmp_path / "notification_state.json").read_text("utf-8"))
+    return state["last_increased_characters"]
+
+
+def test_gaining_character_is_recorded_for_the_status_page(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    # Mai has the higher count, but Elena is the one being farmed.
+    write_database(database_path, {"Elena": 14, "Mai": 92})
+
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Elena": 15, "Mai": 92}),
+    )
+
+    assert read_last_increased_characters(tmp_path) == ["Elena"]
+
+
+def test_poll_without_an_increase_keeps_the_recorded_characters(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Elena": 14, "Mai": 92})
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Elena": 15, "Mai": 92}),
+    )
+
+    # A flat poll, then a phase reset that drops every count to 0: neither has
+    # a gaining character, so neither says who is farming.
+    for counts in ({"Elena": 15, "Mai": 92}, {"Elena": 0, "Mai": 0}):
+        fake_clock.advance(60)
+        run_task_with_response(
+            monkeypatch, config_data, manager, database_path, make_response(counts)
+        )
+
+    assert read_database(database_path) == {"Elena": 0, "Mai": 0}
+    assert read_last_increased_characters(tmp_path) == ["Elena"]
+
+
+def test_two_gaining_characters_are_both_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Ryu": 100, "Ingrid": 0, "Ken": 3})
+
+    # The monitor was off across a swap, so one poll sees both characters gain.
+    # It records the fact and leaves the tie to the status page.
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Ryu": 101, "Ingrid": 59, "Ken": 3}),
+    )
+
+    assert read_last_increased_characters(tmp_path) == ["Ryu", "Ingrid"]
+
+
 def test_corrupt_database_is_replaced_from_current_response(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

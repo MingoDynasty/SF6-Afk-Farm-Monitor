@@ -1197,3 +1197,66 @@ def test_record_change_resets_seconds_since_last_change(
     manager.record_change()
     assert manager.seconds_since_last_change() == 0
     assert manager.last_change_at == fake_clock.now
+
+
+# -- last_increased_characters (status page in-progress highlight) ------------
+
+
+def test_record_change_persists_increased_characters_across_reload(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "notification_state.json"
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    manager.record_change(["Ryu", "Ingrid"])
+
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["last_increased_characters"] == ["Ryu", "Ingrid"]
+    reloaded = IncidentManager(fake_client, make_config(), state_path, clock=fake_clock)
+    assert reloaded.last_increased_characters == ["Ryu", "Ingrid"]
+
+
+def test_record_change_without_increase_keeps_previous_characters(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.record_change(["Elena"])
+
+    # A change with no gaining character (phase reset, new roster entry) still
+    # resets the stuck timer but says nothing about who is farming.
+    fake_clock.advance(60)
+    manager.record_change()
+
+    assert manager.last_increased_characters == ["Elena"]
+    assert manager.last_change_at == fake_clock.now
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        # Written before the key existed.
+        {"incidents": {}, "last_change_at": 500.0, "pending_cancel": {}},
+        {"incidents": {}, "last_change_at": 500.0, "last_increased_characters": "Ryu"},
+        {"incidents": {}, "last_change_at": 500.0, "last_increased_characters": None},
+    ],
+)
+def test_missing_or_malformed_increased_characters_load_as_empty(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+    state: dict[str, object],
+) -> None:
+    state_path = tmp_path / "notification_state.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    manager = IncidentManager(fake_client, make_config(), state_path, clock=fake_clock)
+
+    assert manager.last_increased_characters == []
+    assert manager.last_change_at == 500.0
