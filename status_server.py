@@ -336,9 +336,12 @@ PAGE_HTML = """<!DOCTYPE html>
   .wrap { max-width: 720px; margin: 0 auto; padding: 1.25rem 1rem; }
   .header { display: flex; align-items: center; justify-content: space-between;
             gap: 1rem; margin-bottom: 0.35rem; }
-  .header-actions { align-items: center; display: flex; flex: 0 0 auto;
+  .header-actions { align-items: center; display: flex; flex: 0 1 auto;
                     flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }
-  h1 { font-size: 1.3rem; margin: 0; }
+  /* The title takes whatever the actions leave, down to its longest word.
+     Only past that do the actions shrink and wrap, so a wide swap pill on a
+     phone wraps instead of pushing the other pills off-screen. */
+  h1 { flex: 1 1 0%; font-size: 1.3rem; margin: 0; }
   .theme-toggle { border: 1px solid var(--toggle-border);
                   background: var(--toggle-bg); color: var(--text);
                   border-radius: 999px; cursor: pointer; flex: 0 0 auto;

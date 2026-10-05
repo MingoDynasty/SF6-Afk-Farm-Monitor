@@ -126,6 +126,17 @@ def test_hidden_pill_is_not_displayed() -> None:
     assert ".health[hidden] { display: none; }" in PAGE_HTML
 
 
+def test_header_actions_can_shrink_and_wrap() -> None:
+    # At phone width the swap pill makes the actions wider than the screen.
+    # They must be allowed to shrink (and so wrap) once the title has given up
+    # all it can, or the health pill and theme toggle are pushed off-screen.
+    assert ".header-actions { align-items: center; display: flex; flex: 0 1 auto;" in (
+        PAGE_HTML
+    )
+    assert "flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; }" in PAGE_HTML
+    assert "h1 { flex: 1 1 0%; font-size: 1.3rem; margin: 0; }" in PAGE_HTML
+
+
 def test_status_page_includes_in_progress_hooks() -> None:
     assert 'if (character.in_progress) tr.classList.add("in-progress")' in PAGE_HTML
     assert "tbody tr.in-progress td" in PAGE_HTML
