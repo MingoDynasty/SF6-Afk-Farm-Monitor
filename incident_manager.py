@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -87,6 +87,10 @@ class IncidentManager:
 
         self.incidents: dict[str, dict[str, Any]] = {}
         self.last_change_at: float = 0.0
+        # The characters that gained a battle on the last poll that saw a gain.
+        # Nothing here reads it back: the status page highlights them as in
+        # progress, and decides for itself what a multi-character poll means.
+        self.last_increased_characters: list[str] = []
         self.pending_cancel: dict[str, float] = {}
         # When the current run of failed polls began, or None while Buckler is
         # answering. Kept in memory only: a persisted value could outlive the
@@ -127,6 +131,13 @@ class IncidentManager:
         self.last_change_at = float(data.get("last_change_at") or 0)
         if self.last_change_at <= 0:
             self.last_change_at = self.clock()
+        # Absent from state files written before the key existed.
+        increased = data.get("last_increased_characters")
+        self.last_increased_characters = (
+            [str(character) for character in increased]
+            if isinstance(increased, list)
+            else []
+        )
         if migrated_pending_cancel:
             self._save()
         return False
@@ -135,6 +146,7 @@ class IncidentManager:
         self.incidents = {}
         self.pending_cancel = {}
         self.last_change_at = self.clock()
+        self.last_increased_characters = []
 
     def _load_pending_cancel(self, value: Any) -> bool:
         if isinstance(value, dict):
@@ -157,6 +169,7 @@ class IncidentManager:
         data = {
             "incidents": self.incidents,
             "last_change_at": self.last_change_at,
+            "last_increased_characters": self.last_increased_characters,
             "pending_cancel": self.pending_cancel,
         }
         temporary_path = self.state_path.with_name(f"{self.state_path.name}.tmp")
@@ -220,9 +233,16 @@ class IncidentManager:
 
     # -- stuck-timer state (replaces the database.json mtime check, M10) -----
 
-    def record_change(self) -> None:
-        """Record farm progress and persist the updated change time."""
+    def record_change(self, increased_characters: Sequence[str] = ()) -> None:
+        """Record farm progress and persist the updated change time.
+
+        ``increased_characters`` are the characters whose count went up this
+        poll. A change with none (first init, a phase reset, a new roster
+        entry) says nothing about who is farming, so it keeps the previous list.
+        """
         self.last_change_at = self.clock()
+        if increased_characters:
+            self.last_increased_characters = list(increased_characters)
         self._save()
 
     def seconds_since_last_change(self) -> float:

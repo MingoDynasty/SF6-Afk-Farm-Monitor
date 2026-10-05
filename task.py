@@ -187,9 +187,10 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
 
     # Update database with current data. last_change_at (owned by the incident
     # manager) is the stuck-timer source, replacing the database.json mtime
-    # check (retires review finding M10).
+    # check (retires review finding M10). The same write records which
+    # characters gained, for the status page's in-progress highlight.
     if data_differs:
-        incident_manager.record_change()
+        incident_manager.record_change(increased_characters)
         write_to_database(current_character_to_battle_count, database_path)
 
     stuck = incident_manager.seconds_since_last_change() >= config.battle_count_timeout
