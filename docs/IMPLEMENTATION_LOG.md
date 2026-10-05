@@ -69,6 +69,16 @@ have all landed with tests (93 passing) and clean Black/mypy.
 - **Decisions made in-session:** <small calls not covered by the docs>
 -->
 
+### 2026-10-05 — Session 11: Session 10 follow-ups (uv pin, auth-expiry log line, unexpected-failure message)
+- **Branch / commits:** `claude/transient-failure-followups-0a8bec`; `6461c80` bump the required uv version to 0.12.13, `abec0b1` log auth expiry without a traceback, `363b1a2` reword the unexpected-failure message; this log entry follows on the same branch.
+- **Done:** The three items Session 10 carried over.
+  - **uv pin (`pyproject.toml`):** `[tool.uv] required-version` moves from `==0.11.26` to `==0.12.13`, still an exact pin, so `uv` starts again on a machine with uv 0.12.13. Resolves finding F12 of the 2026-08-08 audit. `uv.lock` and `ci.yml` are unchanged; setup-uv installs whatever version the pin names.
+  - **Auth expiry (`task.py`):** the `AuthExpiredError` handler logs one ERROR line, `<AUTH_EXPIRED_MESSAGE> (<exception text>)`, instead of calling `logger.exception`. The exception text says which signal fired (HTTP 401/403, a non-JSON body, or a missing `response` key). The level, the constant, the `evaluate_auth_expired` call and the per-poll cadence are unchanged.
+  - **Unexpected failure (`task.py`):** a new `UNEXPECTED_FAILURE_MESSAGE` constant replaces the "completely borked" text in both the log line and the `api_down` push. The handler keeps `logger.exception` and still goes through `evaluate_api_down`.
+- **Verified by:** `uv lock --check` (clean, no relock), `uv sync --locked`, `uv run ruff format --check .` (clean), `uv run ruff check .` (clean), `uv run mypy` (no issues), `uv run pytest` → 138 passed after the pin bump and **140 passed** at the end (+2). All gates ran through `uv run` in a fresh worktree venv. Each new test failed before its fix: the auth-expiry test on `exc_info is None`, and the message test first on the missing constant, then, with the constant defined and the handler not yet using it, on the message text. A scripted replay through `do_task` with `app.py`'s log format and the fake Pushover client showed one ERROR line and no traceback for an `AuthExpiredError` poll, and a traceback on each of two consecutive pydantic `ValidationError` polls followed by one `priority=1` push carrying the new text.
+- **Not done / carried over:** Nothing in scope. An unexpected failure still opens `api_down`, so the status page reads "API DOWN" for a schema change or a bug. A separate incident kind for that is a design change and needs its own proposal.
+- **Decisions made in-session:** The message check is a new test beside `test_unexpected_failure_still_logs_a_traceback` rather than an extension of it, so that test stays a guard that passes on both sides of the change.
+
 ### 2026-10-04 — Session 10: transient Buckler failures (quiet logging + confirmed `api_down`)
 - **Branch / commits:** `claude/transient-http-502-errors-4148d0`; `457ef61` log upstream Buckler failures without a traceback, `5fe4cb7` open `api_down` only after a second consecutive failed poll; this log entry follows on the same branch.
 - **Done:** Two changes prompted by a one-off HTTP 502 that printed a traceback and paged twice.
