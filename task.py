@@ -8,7 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import humanize
-from requests import HTTPError
+from requests import RequestException
 
 from api_service import AuthExpiredError, get_character_win_rates
 from config import ConfigData
@@ -106,10 +106,15 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
             active=True, build_message=lambda: AUTH_EXPIRED_MESSAGE
         )
         return
-    except HTTPError:
-        message = "Capcom Buckler website down?"
-        logger.exception(message)
-        incident_manager.evaluate_api_down(active=True, down_message=message)
+    except RequestException as exc:
+        # An upstream failure (5xx, connection error, timeout) is expected from
+        # Buckler now and then, so it gets one line instead of a traceback that
+        # reads like a bug here. api_service already logged any response body
+        # at DEBUG.
+        logger.warning("Buckler poll failed (%s): %s", type(exc).__name__, exc)
+        incident_manager.evaluate_api_down(
+            active=True, down_message="Capcom Buckler website down?"
+        )
         return
     except Exception:
         message = "Caught generic Exception. This isn't an HTTPError? Capcom Buckler website must be completely borked."
