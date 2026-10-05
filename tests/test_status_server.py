@@ -130,19 +130,29 @@ def test_status_page_includes_in_progress_hooks() -> None:
     assert 'if (character.in_progress) tr.classList.add("in-progress")' in PAGE_HTML
     assert "tbody tr.in-progress td" in PAGE_HTML
     # Every row gets an icon slot left of the name, so the names stay aligned.
-    # CSS draws the icon: a checkmark when finished, a spinner when in progress.
     assert 'icon.className = "status-icon"' in PAGE_HTML
     assert "name.append(icon, character.name)" in PAGE_HTML
     # Without this a name wraps away from its slot at phone width.
     assert "td.name { white-space: nowrap; }" in PAGE_HTML
-    assert 'icon.setAttribute("aria-label", "in progress")' in PAGE_HTML
+    # Both status icons are inline SVG templates in one stroke style, and each
+    # is named for screen readers because it carries no text.
+    assert '<template id="icon-finished">' in PAGE_HTML
+    assert '<template id="icon-in-progress">' in PAGE_HTML
+    assert 'finished: { template: "icon-finished", label: "Finished" }' in PAGE_HTML
+    assert (
+        'inProgress: { template: "icon-in-progress", label: "In progress" }'
+        in PAGE_HTML
+    )
+    assert 'icon.setAttribute("aria-label", status.label)' in PAGE_HTML
+    # A row that is both finished and in progress shows the in-progress icon.
+    assert "character.in_progress ? STATUS_ICONS.inProgress :" in PAGE_HTML
     assert "prefers-reduced-motion: reduce" in PAGE_HTML
     assert "tr.in-progress .fill { background: var(--in-progress-fill); }" in PAGE_HTML
     # Each in-progress rule comes after its finished counterpart, so a finished
-    # row that is still gaining takes the in-progress bar color and icon.
+    # row that is still gaining takes the in-progress colors.
     for finished_rule, in_progress_rule in [
         ("tr.finished .fill {", "tr.in-progress .fill {"),
-        ("tr.finished .status-icon::before {", "tr.in-progress .status-icon::before {"),
+        ("tr.finished .status-icon {", "tr.in-progress .status-icon {"),
     ]:
         assert PAGE_HTML.index(finished_rule) < PAGE_HTML.index(in_progress_rule)
 

@@ -240,8 +240,9 @@ FAVICON_HREF = (
 
 # Single self-contained page. Vanilla JS re-fetches /api/status every 30 s and
 # re-renders; character names are written as text (never innerHTML), so
-# nothing from the data files can inject markup. Kept ASCII-only (the checkmark
-# is a CSS \2713 escape) so the source has no encoding surprises.
+# nothing from the data files can inject markup. Kept ASCII-only (icons are
+# inline SVG, the same as the theme toggle) so the source has no encoding
+# surprises.
 PAGE_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -384,27 +385,24 @@ PAGE_HTML = """<!DOCTYPE html>
   /* Every row has the icon slot, so names line up with or without an icon.
      nowrap keeps a name from wrapping away from its slot on a narrow screen. */
   td.name { white-space: nowrap; }
-  .status-icon { display: inline-block; margin-right: 0.3em;
-                 text-align: center; width: 1em; }
-  tr.finished .status-icon::before { content: "\\2713";
-                                     color: var(--finished-text); }
+  .status-icon { display: inline-block; height: 1em; margin-right: 0.3em;
+                 vertical-align: -0.15em; width: 1em; }
+  .status-icon svg { display: block; height: 100%; width: 100%; }
+  tr.finished .status-icon { color: var(--finished-text); }
   /* The in-progress rules follow the hover and finished rules and are equally
      specific, so the tint survives hover and a finished row that is still
-     gaining takes the in-progress bar color and icon. */
+     gaining takes the in-progress colors. */
   tbody tr.in-progress td { background: var(--in-progress-bg); }
   tr.in-progress td.name { box-shadow: inset 3px 0 0 var(--in-progress-fill);
                            font-weight: 600; }
   tr.in-progress .bar { background: var(--in-progress-bar-bg); }
   tr.in-progress .fill { background: var(--in-progress-fill); }
-  tr.in-progress .status-icon::before {
-    animation: progress-spin 1.2s linear infinite;
-    border: 2px solid var(--in-progress-text);
-    border-right-color: transparent; border-radius: 50%; content: "";
-    display: inline-block; height: 0.7em; vertical-align: -0.05em;
-    width: 0.7em; }
+  tr.in-progress .status-icon { color: var(--in-progress-text); }
+  tr.in-progress .status-icon svg {
+    animation: progress-spin 1.2s linear infinite; }
   @keyframes progress-spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) {
-    tr.in-progress .status-icon::before { animation: none; }
+    tr.in-progress .status-icon svg { animation: none; }
   }
   @media (max-width: 560px) {
     .header { align-items: flex-start; }
@@ -456,12 +454,30 @@ PAGE_HTML = """<!DOCTYPE html>
     <tbody id="rows"></tbody>
   </table>
 </div>
+<!-- Row status icons, cloned into each row's icon slot. Same stroke style as
+     the theme toggle icons. -->
+<template id="icon-finished">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M5 12.5l4.5 4.5L19 7"></path>
+  </svg>
+</template>
+<template id="icon-in-progress">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 3a9 9 0 1 0 9 9"></path>
+  </svg>
+</template>
 <script>
 const BASE_TITLE = "SF6 Afk Farm Monitor";
 const ALERT_TITLE_PREFIX = "\\u26A0 ";
 const HEALTH_CLASS = { OK: "ok", STUCK: "stuck", API_DOWN: "down",
                        AUTH_EXPIRED: "auth", UNKNOWN: "unknown" };
 const THEME_STORAGE_KEY = "sf6-status-theme";
+const STATUS_ICONS = {
+  finished: { template: "icon-finished", label: "Finished" },
+  inProgress: { template: "icon-in-progress", label: "In progress" },
+};
 let hasRenderedStatus = false;
 let stalenessClock = null;
 
@@ -612,11 +628,18 @@ function render(data) {
     name.className = "name";
     const icon = document.createElement("span");
     icon.className = "status-icon";
-    if (character.in_progress) {
-      // The spinner carries no text, so name it for screen readers and hover.
+    // The slot holds one icon: a finished row that is still gaining shows the
+    // in-progress one.
+    const status = character.in_progress ? STATUS_ICONS.inProgress :
+                   character.finished ? STATUS_ICONS.finished : null;
+    if (status) {
+      // Clone the svg alone, not the whitespace around it in the template.
+      const template = document.getElementById(status.template);
+      icon.appendChild(template.content.firstElementChild.cloneNode(true));
+      // The icon carries no text, so name it for screen readers and hover.
       icon.setAttribute("role", "img");
-      icon.setAttribute("aria-label", "in progress");
-      icon.title = "In progress";
+      icon.setAttribute("aria-label", status.label);
+      icon.title = status.label;
     }
     // A string argument becomes a text node, so the name is never parsed.
     name.append(icon, character.name);
