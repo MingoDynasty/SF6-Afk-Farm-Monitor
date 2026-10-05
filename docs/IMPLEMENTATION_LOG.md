@@ -69,6 +69,22 @@ have all landed with tests (93 passing) and clean Black/mypy.
 - **Decisions made in-session:** <small calls not covered by the docs>
 -->
 
+### 2026-10-05 — Session 12: in-progress character highlight on the status page
+- **Branch / commits:** `claude/current-character-progress-ba8435`; `a6d3f4d` record the characters that last gained a battle, `b0dc626` highlight the character in progress on the status page; this log entry follows on the same branch.
+- **Done:** The status page now shows which character is being farmed. Before this it could only guess, by sorting unfinished characters by descending count, which put the character actually farming (15 battles) below two idle ones (92 and 89).
+  - **Monitor (`incident_manager.py`, `task.py`):** `record_change` takes the poll's `increased_characters` and saves them as `last_increased_characters` in `notification_state.json`, in the write that already records `last_change_at`. No new file and no extra write. A change with no gaining character (first init, a phase reset, a new roster entry) keeps the previous list. A state file without the key, or with a non-list value, loads as an empty list.
+  - **Status page (`status_server.py`):** each row in `/api/status` carries `in_progress`, true when its name is in that list. The page tints the row, draws an accent bar on its left edge, bolds the name and appends an "in progress" text tag. A missing or malformed key flags nothing.
+- **Verified by:** `uv run ruff format --check .` (clean), `uv run ruff check .` (clean), `uv run mypy` (no issues), `uv run pytest` → **154 passed** (was 140; +14). The 13 tests that encode the new behavior failed against the previous code (8 monitor, 5 page); the fourteenth is a guard that the row order is unchanged and passes on both sides. A scripted replay ran the real `do_task` against a copy of the live `data/database.json` with Buckler faked and Pushover disabled, and the page was then served from this branch against that state: one gaining character highlighted one row, and a poll where a finished and an unfinished character both gained highlighted both. Checked in the browser in light and dark themes, at 375 px width (no horizontal scroll, rows stay one line), and under mouse hover (the tint stays).
+- **Not done / carried over:**
+  - The highlighted row is not pinned to the top of the table (decision below).
+  - The monitor knows the last character to gain a battle, not the character in progress. After a swap the old character stays highlighted until the new one finishes its first match, and the highlight stays put while the farm is stuck or the monitor is off.
+  - Found, not fixed: the `swap-needed` pill renders as a small empty pill when no swap is needed, because `.health { display: inline-block }` overrides its `hidden` attribute. It predates this session.
+- **Decisions made in-session:**
+  - **Ruled by the user, 2026-10-05:** a poll where several characters gain highlights every one of them, and the feature is highlight only, with no pinning.
+  - **The monitor stores the full list and applies no tie rule.** The page decides what a tie looks like, so that choice can change without touching the monitor.
+  - **"Random" is stored as observed and never highlighted.** The page already drops it from the table, which keeps the 2026-06-13 view-only decision.
+  - **The finished checkmark moved from the name cell to a span around the name text**, so a finished row that is still gaining reads "Akuma ✓ in progress" rather than putting the tag between the name and the checkmark.
+
 ### 2026-10-05 — Session 11: Session 10 follow-ups (uv pin, auth-expiry log line, unexpected-failure message)
 - **Branch / commits:** `claude/transient-failure-followups-0a8bec`; `6461c80` bump the required uv version to 0.12.13, `abec0b1` log auth expiry without a traceback, `363b1a2` reword the unexpected-failure message; this log entry follows on the same branch.
 - **Done:** The three items Session 10 carried over.
