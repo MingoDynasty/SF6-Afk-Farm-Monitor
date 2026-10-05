@@ -98,10 +98,12 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
 
     try:
         win_rate_response = get_character_win_rates(config)
-    except AuthExpiredError:
+    except AuthExpiredError as exc:
         # Expired cookies are actionable and blind all monitoring; an emergency
-        # incident nags until the user refreshes them (review finding M3).
-        logger.exception(AUTH_EXPIRED_MESSAGE)
+        # incident nags until the user refreshes them (review finding M3). The
+        # condition is already classified, so it gets one line, not a traceback;
+        # the exception text says which signal fired.
+        logger.error("%s (%s)", AUTH_EXPIRED_MESSAGE, exc)
         incident_manager.evaluate_auth_expired(
             active=True, build_message=lambda: AUTH_EXPIRED_MESSAGE
         )
