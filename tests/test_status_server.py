@@ -120,12 +120,23 @@ def test_status_page_includes_pr1_ux_hooks() -> None:
 
 def test_status_page_includes_in_progress_hooks() -> None:
     assert 'if (character.in_progress) tr.classList.add("in-progress")' in PAGE_HTML
-    assert 'tag.textContent = "in progress"' in PAGE_HTML
     assert "tbody tr.in-progress td" in PAGE_HTML
-    # The finished checkmark hangs off the name text, so it stays next to the
-    # name when a finished row also carries the tag.
-    assert "tr.finished .name-text::after" in PAGE_HTML
-    assert "tr.in-progress .name-text { white-space: nowrap; }" in PAGE_HTML
+    # Every row gets an icon slot left of the name, so the names stay aligned.
+    # CSS draws the icon: a checkmark when finished, a spinner when in progress.
+    assert 'icon.className = "status-icon"' in PAGE_HTML
+    assert "name.append(icon, character.name)" in PAGE_HTML
+    # Without this a name wraps away from its slot at phone width.
+    assert "td.name { white-space: nowrap; }" in PAGE_HTML
+    assert 'icon.setAttribute("aria-label", "in progress")' in PAGE_HTML
+    assert "prefers-reduced-motion: reduce" in PAGE_HTML
+    assert "tr.in-progress .fill { background: var(--in-progress-fill); }" in PAGE_HTML
+    # Each in-progress rule comes after its finished counterpart, so a finished
+    # row that is still gaining takes the in-progress bar color and icon.
+    for finished_rule, in_progress_rule in [
+        ("tr.finished .fill {", "tr.in-progress .fill {"),
+        ("tr.finished .status-icon::before {", "tr.in-progress .status-icon::before {"),
+    ]:
+        assert PAGE_HTML.index(finished_rule) < PAGE_HTML.index(in_progress_rule)
 
 
 # -- character rows / sorting ------------------------------------------------

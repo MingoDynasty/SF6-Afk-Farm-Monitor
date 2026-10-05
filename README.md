@@ -126,8 +126,9 @@ Example Pushover notification:
 
 An optional local web page shows live farm progress at a glance: a per-character table with 0–100 progress bars
 (unfinished characters first), the finished-character tally, how long it has been since the last battle-count change,
-and the current health (OK / stuck / API down / auth expired). The character being farmed is highlighted and tagged
-"in progress": it is the last character the monitor saw gain a battle, so after a swap the highlight moves once the new
+and the current health (OK / stuck / API down / auth expired). The character being farmed is highlighted: its row
+is tinted, its bar takes its own color, and a progress icon sits left of its name where finished characters show a
+checkmark. It is the last character the monitor saw gain a battle, so after a swap the highlight moves once the new
 character finishes its first match. It is a **separate, read-only process** from the
 monitor — it only reads `data/database.json` and `data/notification_state.json`, so it never affects monitoring and can
 be started or stopped independently of `app.py`.

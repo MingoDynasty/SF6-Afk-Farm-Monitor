@@ -239,7 +239,7 @@ FAVICON_HREF = (
 )
 
 # Single self-contained page. Vanilla JS re-fetches /api/status every 30 s and
-# re-renders; character names are written via textContent (never innerHTML), so
+# re-renders; character names are written as text (never innerHTML), so
 # nothing from the data files can inject markup. Kept ASCII-only (the checkmark
 # is a CSS \2713 escape) so the source has no encoding surprises.
 PAGE_HTML = """<!DOCTYPE html>
@@ -280,8 +280,10 @@ PAGE_HTML = """<!DOCTYPE html>
     --fill: #1976d2;
     --finished-fill: #2e7d32;
     --finished-text: #2e7d32;
-    --in-progress-bg: #dcebfa;
-    --in-progress-bar-bg: #b9d3ee;
+    --in-progress-fill: #7b1fa2;
+    --in-progress-text: #7b1fa2;
+    --in-progress-bg: #f3e5f5;
+    --in-progress-bar-bg: #e1bee7;
     --footer: #666;
     --toggle-bg: #fff;
     --toggle-border: #c9ced6;
@@ -309,8 +311,10 @@ PAGE_HTML = """<!DOCTYPE html>
     --fill: #1971c2;
     --finished-fill: #2b8a3e;
     --finished-text: #8ce99a;
-    --in-progress-bg: #1c2f45;
-    --in-progress-bar-bg: #34506e;
+    --in-progress-fill: #be4bdb;
+    --in-progress-text: #e599f7;
+    --in-progress-bg: #2a1e33;
+    --in-progress-bar-bg: #453253;
     --footer: #909296;
     --toggle-bg: #25262b;
     --toggle-border: #373a40;
@@ -375,19 +379,31 @@ PAGE_HTML = """<!DOCTYPE html>
          overflow: hidden; }
   .fill { height: 100%; background: var(--fill); transition: width 0.3s; }
   tr.finished .fill { background: var(--finished-fill); }
-  tr.finished .name-text::after { content: " \\2713";
-                                  color: var(--finished-text); }
-  /* After the hover rule and equally specific, so the tint survives hover. */
+  /* Every row has the icon slot, so names line up with or without an icon.
+     nowrap keeps a name from wrapping away from its slot on a narrow screen. */
+  td.name { white-space: nowrap; }
+  .status-icon { display: inline-block; margin-right: 0.3em;
+                 text-align: center; width: 1em; }
+  tr.finished .status-icon::before { content: "\\2713";
+                                     color: var(--finished-text); }
+  /* The in-progress rules follow the hover and finished rules and are equally
+     specific, so the tint survives hover and a finished row that is still
+     gaining takes the in-progress bar color and icon. */
   tbody tr.in-progress td { background: var(--in-progress-bg); }
-  tr.in-progress td.name { box-shadow: inset 3px 0 0 var(--fill);
+  tr.in-progress td.name { box-shadow: inset 3px 0 0 var(--in-progress-fill);
                            font-weight: 600; }
-  /* On a narrow screen the tag wraps below; keep the checkmark with the name. */
-  tr.in-progress .name-text { white-space: nowrap; }
   tr.in-progress .bar { background: var(--in-progress-bar-bg); }
-  .tag { background: var(--fill); border-radius: 999px; color: #fff;
-         font-size: 0.7rem; font-weight: 600; letter-spacing: 0.03em;
-         margin-left: 0.45rem; padding: 0.05rem 0.45rem;
-         text-transform: uppercase; white-space: nowrap; }
+  tr.in-progress .fill { background: var(--in-progress-fill); }
+  tr.in-progress .status-icon::before {
+    animation: progress-spin 1.2s linear infinite;
+    border: 2px solid var(--in-progress-text);
+    border-right-color: transparent; border-radius: 50%; content: "";
+    display: inline-block; height: 0.7em; vertical-align: -0.05em;
+    width: 0.7em; }
+  @keyframes progress-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    tr.in-progress .status-icon::before { animation: none; }
+  }
   @media (max-width: 560px) {
     .header { align-items: flex-start; }
     .meta-row { display: block; margin-bottom: 0.5rem; }
@@ -592,16 +608,16 @@ function render(data) {
 
     const name = document.createElement("td");
     name.className = "name";
-    const nameText = document.createElement("span");
-    nameText.className = "name-text";
-    nameText.textContent = character.name;
-    name.appendChild(nameText);
+    const icon = document.createElement("span");
+    icon.className = "status-icon";
     if (character.in_progress) {
-      const tag = document.createElement("span");
-      tag.className = "tag";
-      tag.textContent = "in progress";
-      name.appendChild(tag);
+      // The spinner carries no text, so name it for screen readers and hover.
+      icon.setAttribute("role", "img");
+      icon.setAttribute("aria-label", "in progress");
+      icon.title = "In progress";
     }
+    // A string argument becomes a text node, so the name is never parsed.
+    name.append(icon, character.name);
 
     const barCell = document.createElement("td");
     barCell.className = "bar-cell";
