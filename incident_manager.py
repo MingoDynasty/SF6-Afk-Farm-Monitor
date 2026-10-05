@@ -88,6 +88,11 @@ class IncidentManager:
         self.incidents: dict[str, dict[str, Any]] = {}
         self.last_change_at: float = 0.0
         self.pending_cancel: dict[str, float] = {}
+        # When the current run of failed polls began, or None while Buckler is
+        # answering. Kept in memory only: a persisted value could outlive the
+        # run it describes and let one later failure open api_down unconfirmed,
+        # whereas a restart here merely costs one extra poll of confirmation.
+        self._api_failing_since: float | None = None
         self._needs_reconcile = self._load()
 
     # -- persistence ---------------------------------------------------------
@@ -241,6 +246,10 @@ class IncidentManager:
         # until fixed. The only difference is the close signal — auth_expired
         # closes on the first successful poll, which do_task drives via the
         # active flag (review finding M3).
+        if active:
+            # An auth rejection is still an answer from Buckler, so it ends any
+            # unconfirmed run of failed polls (see evaluate_api_down).
+            self._api_failing_since = None
         self._evaluate_emergency(AUTH_EXPIRED, AUTH_EXPIRED_TAG, active, build_message)
 
     def evaluate_swap_needed(
@@ -476,16 +485,36 @@ class IncidentManager:
     # -- api_down incident (one-shot, high priority) ------------------------
 
     def evaluate_api_down(self, active: bool, down_message: str | None = None) -> None:
-        """Open or close the one-shot Buckler API outage incident."""
+        """Open or close the one-shot Buckler API outage incident.
+
+        One failed poll opens nothing. Buckler's gateway returns the odd 502
+        that is gone by the next poll, so the incident opens only once a second
+        consecutive poll fails (ALERT_DEDUPLICATION_PROPOSAL.md §11, decided
+        2026-10-04).
+        """
         incident = self.incidents.get(API_DOWN)
         if active:
-            if incident is None:
-                self._open_api_down(down_message or "Capcom Buckler API unreachable.")
-            # Already OPEN: one-shot, send nothing more.
-        elif incident is not None:
-            self._close_api_down(incident)
+            if incident is not None:
+                return  # Already OPEN: one-shot, send nothing more.
+            if self._api_failing_since is None:
+                self._api_failing_since = self.clock()
+                return
+            self._open_api_down(
+                down_message or "Capcom Buckler API unreachable.",
+                self._api_failing_since,
+            )
+            return
 
-    def _open_api_down(self, down_message: str) -> None:
+        failing_since = self._api_failing_since
+        self._api_failing_since = None
+        if incident is not None:
+            self._close_api_down(incident)
+        elif failing_since is not None:
+            logger.info(
+                "Buckler API recovered after a single failed poll; no alert sent."
+            )
+
+    def _open_api_down(self, down_message: str, failing_since: float) -> None:
         if self.enabled:
             # priority=1 returns no receipt, so the return value is not a
             # success signal; this is a best-effort one-shot send.
@@ -495,7 +524,9 @@ class IncidentManager:
                 sound=INCIDENT_SOUNDS.get(API_DOWN),
                 timestamp=int(self.clock()),
             )
-        self.incidents[API_DOWN] = {"opened_at": self.clock()}
+        # Backdated to the first failed poll, so the recovery message reports
+        # the whole outage rather than the time since it was confirmed.
+        self.incidents[API_DOWN] = {"opened_at": failing_since}
         logger.warning("api_down incident OPENED: %s", down_message)
         self._save()
 

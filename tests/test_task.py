@@ -313,10 +313,54 @@ def test_api_failure_opens_api_down_incident(
 
     monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
 
+    # One failed poll is unconfirmed; the second consecutive one opens it.
+    task.do_task(config_data, manager, database_path)
+    assert fake_client.sent == []
+
     task.do_task(config_data, manager, database_path)
 
     assert len(fake_client.sent) == 1
     assert fake_client.sent[0]["priority"] == 1
+
+
+def test_single_failed_poll_is_one_warning_and_no_alert(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Mai": 58})
+
+    def fake_get_character_win_rates(config: ConfigData) -> WinRateResponse:
+        raise HTTPError("502 Server Error: Bad Gateway for url: https://example.test")
+
+    monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
+
+    with caplog.at_level(logging.DEBUG):
+        task.do_task(config_data, manager, database_path)
+        fake_clock.advance(60)
+        # The blip is gone by the next poll, which also carries a new count.
+        run_task_with_response(
+            monkeypatch, config_data, manager, database_path, make_response({"Mai": 59})
+        )
+
+    loud_records = [
+        record for record in caplog.records if record.levelno >= logging.WARNING
+    ]
+    assert len(loud_records) == 1
+    assert loud_records[0].exc_info is None
+    assert "502 Server Error" in loud_records[0].getMessage()
+    assert fake_client.sent == []
+    state = json.loads((tmp_path / "notification_state.json").read_text("utf-8"))
+    assert API_DOWN not in state["incidents"]
+    # The missed poll loses nothing: the next one diffs against the last write.
+    assert read_database(database_path) == {"Mai": 59}
 
 
 @pytest.mark.parametrize(
@@ -344,6 +388,9 @@ def test_outage_errors_open_api_down_not_auth_expired(
         raise exception
 
     monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
+
+    task.do_task(config_data, manager, database_path)
+    assert API_DOWN not in manager.incidents
 
     task.do_task(config_data, manager, database_path)
 

@@ -630,10 +630,13 @@ def test_api_down_send_has_falling_sound_timestamp_and_no_url(
     manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
 
     manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+    fake_clock.advance(60)
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
 
     sent = fake_client.sent[0]
     assert sent["sound"] == "falling"
     assert sent["url"] is None
+    # Stamped when the outage was confirmed, not when the first poll failed.
     assert sent["timestamp"] == int(fake_clock.now)
 
 
@@ -792,7 +795,8 @@ def test_pending_cancel_deadline_dict_round_trips(
     assert reloaded.pending_cancel == {"receipt-a": fake_clock.now + 123}
 
 
-# -- api_down: one-shot high priority + courtesy recovery ---------------------
+# -- api_down: confirmed on the second failed poll, one-shot high priority, ---
+# -- courtesy recovery ---------------------------------------------------------
 
 
 def test_api_down_sends_one_message_then_recovers_with_courtesy(
@@ -803,22 +807,109 @@ def test_api_down_sends_one_message_then_recovers_with_courtesy(
 ) -> None:
     manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
 
+    # First failed poll: unconfirmed, so nothing is sent or opened.
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+    assert fake_client.sent == []
+    assert API_DOWN not in manager.incidents
+
+    # Second consecutive failed poll confirms the outage.
+    fake_clock.advance(60)
     manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
     assert len(fake_client.sent) == 1
     assert fake_client.sent[0]["priority"] == 1
     assert API_DOWN in manager.incidents
 
     # Still down: one-shot, no further messages.
+    fake_clock.advance(60)
     manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
     assert len(fake_client.sent) == 1
 
-    fake_clock.advance(180)
+    fake_clock.advance(60)
     manager.evaluate_api_down(active=False)
 
     assert API_DOWN not in manager.incidents
     assert len(fake_client.sent) == 2
     assert fake_client.sent[1]["priority"] == 0
-    assert "recovered after" in fake_client.sent[1]["message"]
+    # Measured from the first failed poll, not from the confirming one.
+    assert "recovered after 3 minutes." in fake_client.sent[1]["message"]
+
+
+def test_api_down_single_failed_poll_sends_nothing(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+    fake_clock.advance(60)
+    with caplog.at_level(logging.INFO):
+        manager.evaluate_api_down(active=False)
+
+    assert fake_client.sent == []
+    assert API_DOWN not in manager.incidents
+    assert "recovered after a single failed poll" in caplog.text
+
+
+def test_api_down_needs_consecutive_failed_polls(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    # Two failed polls separated by a good one are two blips, not an outage.
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+    manager.evaluate_api_down(active=False)
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+
+    assert fake_client.sent == []
+    assert API_DOWN not in manager.incidents
+
+
+def test_auth_rejection_ends_an_unconfirmed_run_of_failed_polls(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+
+    # Buckler answered the middle poll (with an auth rejection), so the failed
+    # polls either side of it are not consecutive.
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+    manager.evaluate_auth_expired(active=True, build_message=auth_message)
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+
+    assert API_DOWN not in manager.incidents
+    assert [sent["tags"] for sent in fake_client.sent] == [AUTH_EXPIRED_TAG]
+
+
+def test_open_api_down_survives_restart_and_still_recovers(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+    manager.evaluate_api_down(active=True, down_message="Capcom Buckler website down?")
+    assert API_DOWN in manager.incidents
+
+    # The confirmed incident is persisted; only the unconfirmed run is not.
+    restarted = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    restarted.evaluate_api_down(
+        active=True, down_message="Capcom Buckler website down?"
+    )
+    assert len(fake_client.sent) == 1
+
+    restarted.evaluate_api_down(active=False)
+    assert API_DOWN not in restarted.incidents
+    assert len(fake_client.sent) == 2
+    assert fake_client.sent[1]["priority"] == 0
 
 
 def test_api_down_recovery_without_incident_is_a_noop(
