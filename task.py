@@ -36,6 +36,12 @@ AUTH_EXPIRED_MESSAGE = (
     "then restart the monitor. All monitoring is blind until then."
 )
 
+UNEXPECTED_FAILURE_MESSAGE = (
+    "Unexpected error while polling Buckler. This was not a network "
+    "failure, so the response format may have changed or the monitor "
+    "has a bug. Check logs/info.log."
+)
+
 
 def write_to_database(
     data: Mapping[str, int], database_filename: str | Path = DATABASE_FILENAME
@@ -119,9 +125,12 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
         )
         return
     except Exception:
-        message = "Caught generic Exception. This isn't an HTTPError? Capcom Buckler website must be completely borked."
-        logger.exception(message)
-        incident_manager.evaluate_api_down(active=True, down_message=message)
+        # Request failures were handled above, so this is a response that no
+        # longer validates or a bug here; the traceback says which.
+        logger.exception(UNEXPECTED_FAILURE_MESSAGE)
+        incident_manager.evaluate_api_down(
+            active=True, down_message=UNEXPECTED_FAILURE_MESSAGE
+        )
         return
 
     # The poll succeeded: clear any open api_down / auth_expired incident.
