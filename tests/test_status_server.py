@@ -29,11 +29,21 @@ def _database(**counts: int) -> dict[str, int]:
     return dict(counts)
 
 
-def _state(incidents: dict | None = None, last_change_at: float | None = NOW) -> dict:
+def _state(
+    incidents: dict | None = None,
+    last_change_at: float | None = NOW,
+    last_increased_characters: object = None,
+) -> dict:
     state: dict = {"incidents": incidents or {}, "pending_cancel": []}
     if last_change_at is not None:
         state["last_change_at"] = last_change_at
+    if last_increased_characters is not None:
+        state["last_increased_characters"] = last_increased_characters
     return state
+
+
+def _in_progress_names(status: dict) -> list[str]:
+    return [row["name"] for row in status["characters"] if row["in_progress"]]
 
 
 @contextmanager
@@ -108,6 +118,16 @@ def test_status_page_includes_pr1_ux_hooks() -> None:
     assert "innerHTML" not in PAGE_HTML
 
 
+def test_status_page_includes_in_progress_hooks() -> None:
+    assert 'if (character.in_progress) tr.classList.add("in-progress")' in PAGE_HTML
+    assert 'tag.textContent = "in progress"' in PAGE_HTML
+    assert "tbody tr.in-progress td" in PAGE_HTML
+    # The finished checkmark hangs off the name text, so it stays next to the
+    # name when a finished row also carries the tag.
+    assert "tr.finished .name-text::after" in PAGE_HTML
+    assert "tr.in-progress .name-text { white-space: nowrap; }" in PAGE_HTML
+
+
 # -- character rows / sorting ------------------------------------------------
 
 
@@ -162,6 +182,58 @@ def test_non_farmable_characters_excluded_from_rows_and_tally() -> None:
     assert names == ["Ken", "Luke"]
     assert status["total_count"] == 2
     assert status["finished_count"] == 1
+
+
+# -- in-progress highlight ---------------------------------------------------
+
+
+def test_in_progress_marks_the_character_that_last_gained() -> None:
+    # Mai has the higher count, but the monitor last saw Elena gain.
+    database = _database(Elena=15, Mai=92, Luke=103)
+    state = _state(last_increased_characters=["Elena"])
+    status = build_status(database, state, NOW)
+    assert _in_progress_names(status) == ["Elena"]
+
+
+def test_in_progress_does_not_change_the_row_order() -> None:
+    # Highlight only, by decision: the marked row is not pinned to the top.
+    database = _database(Elena=15, Mai=92, Luke=103)
+    state = _state(last_increased_characters=["Elena"])
+    status = build_status(database, state, NOW)
+    assert [row["name"] for row in status["characters"]] == ["Mai", "Elena", "Luke"]
+
+
+def test_in_progress_marks_every_character_in_a_tied_poll() -> None:
+    # Two characters gained on one poll (the monitor was off across a swap):
+    # both are marked until the next match settles it.
+    database = _database(Ingrid=59, Ken=3, Ryu=101)
+    state = _state(last_increased_characters=["Ryu", "Ingrid"])
+    status = build_status(database, state, NOW)
+    assert _in_progress_names(status) == ["Ingrid", "Ryu"]
+
+
+def test_in_progress_never_marks_a_non_farmable_character() -> None:
+    database = {"Alex": 73, "Random": 1, "Ken": 3}
+    state = _state(last_increased_characters=["Alex", "Random"])
+    status = build_status(database, state, NOW)
+    assert [row["name"] for row in status["characters"]] == ["Alex", "Ken"]
+    assert _in_progress_names(status) == ["Alex"]
+
+
+def test_in_progress_marks_nothing_when_missing_or_malformed() -> None:
+    states = [
+        _state(),
+        _state(last_increased_characters=[]),
+        # A bare string must not mark a row by substring or by character.
+        _state(last_increased_characters="Elena"),
+        _state(last_increased_characters={"Elena": 1}),
+        _state(last_increased_characters=[1, None, ["Elena"]]),
+        None,
+        ["not", "a", "dict"],
+    ]
+    for state in states:
+        status = build_status(_database(Elena=15, E=1), state, NOW)
+        assert _in_progress_names(status) == []
 
 
 # -- health derivation -------------------------------------------------------

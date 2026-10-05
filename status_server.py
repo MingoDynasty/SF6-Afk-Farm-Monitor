@@ -11,8 +11,9 @@ It serves two endpoints:
 
 - ``GET /api/status`` - the assembled state as JSON.
 - ``GET /`` - a single self-contained HTML page (inline CSS/JS) that re-fetches
-  ``/api/status`` every 30 s and renders the character table, finished tally,
-  staleness line, and health line. No build step, no framework.
+  ``/api/status`` every 30 s and renders the character table (highlighting the
+  character being farmed), finished tally, staleness line, and health line. No
+  build step, no framework.
 
 Security: the page is LAN-only by design, no auth (section 5). It serves *only* the
 two ``data/`` files; it never exposes ``config.toml`` contents. ``load_config``
@@ -83,10 +84,25 @@ def load_status_data(
     return _read_json(database_path), _read_json(state_path)
 
 
-def _build_character_rows(database: Any) -> list[dict[str, Any]]:
+def _parse_in_progress(state: Any) -> frozenset[str]:
+    """Names the monitor saw gain a battle on its last gaining poll. Empty when
+    the key is missing (a state file from before it existed) or malformed."""
+    if not isinstance(state, dict):
+        return frozenset()
+    raw = state.get("last_increased_characters")
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(name for name in raw if isinstance(name, str))
+
+
+def _build_character_rows(
+    database: Any, in_progress: frozenset[str]
+) -> list[dict[str, Any]]:
     """Turn the ``{name: battle_count}`` database into display rows, sorted
-    unfinished-first then by descending battle count (the in-progress character
-    surfaces at the top), then finished characters alphabetically."""
+    unfinished-first then by descending battle count, then finished characters
+    alphabetically. Rows named in ``in_progress`` are flagged for the page to
+    highlight; the flag does not affect the order (highlight only, by
+    decision), and a poll where several characters gained flags all of them."""
     if not isinstance(database, dict):
         return []
     rows: list[dict[str, Any]] = []
@@ -108,6 +124,7 @@ def _build_character_rows(database: Any) -> list[dict[str, Any]]:
                 # 0-100 fill for the progress bar; finished characters clamp to
                 # 100 even though their raw count can exceed it.
                 "progress": max(0, min(battle_count, FINISHED_THRESHOLD)),
+                "in_progress": str(name) in in_progress,
             }
         )
     rows.sort(
@@ -188,7 +205,7 @@ def build_status(database: Any, state: Any, now: float) -> dict[str, Any]:
     """Assemble the ``/api/status`` payload from the (possibly missing/corrupt)
     parsed contents of the two state files. Never raises on bad input - missing
     or malformed data degrades to empty rows / healthy-unknown."""
-    characters = _build_character_rows(database)
+    characters = _build_character_rows(database, _parse_in_progress(state))
     finished_count = sum(1 for row in characters if row["finished"])
 
     last_change_at = _parse_last_change_at(state)
@@ -263,6 +280,8 @@ PAGE_HTML = """<!DOCTYPE html>
     --fill: #1976d2;
     --finished-fill: #2e7d32;
     --finished-text: #2e7d32;
+    --in-progress-bg: #dcebfa;
+    --in-progress-bar-bg: #b9d3ee;
     --footer: #666;
     --toggle-bg: #fff;
     --toggle-border: #c9ced6;
@@ -290,6 +309,8 @@ PAGE_HTML = """<!DOCTYPE html>
     --fill: #1971c2;
     --finished-fill: #2b8a3e;
     --finished-text: #8ce99a;
+    --in-progress-bg: #1c2f45;
+    --in-progress-bar-bg: #34506e;
     --footer: #909296;
     --toggle-bg: #25262b;
     --toggle-border: #373a40;
@@ -354,7 +375,19 @@ PAGE_HTML = """<!DOCTYPE html>
          overflow: hidden; }
   .fill { height: 100%; background: var(--fill); transition: width 0.3s; }
   tr.finished .fill { background: var(--finished-fill); }
-  tr.finished td.name::after { content: " \\2713"; color: var(--finished-text); }
+  tr.finished .name-text::after { content: " \\2713";
+                                  color: var(--finished-text); }
+  /* After the hover rule and equally specific, so the tint survives hover. */
+  tbody tr.in-progress td { background: var(--in-progress-bg); }
+  tr.in-progress td.name { box-shadow: inset 3px 0 0 var(--fill);
+                           font-weight: 600; }
+  /* On a narrow screen the tag wraps below; keep the checkmark with the name. */
+  tr.in-progress .name-text { white-space: nowrap; }
+  tr.in-progress .bar { background: var(--in-progress-bar-bg); }
+  .tag { background: var(--fill); border-radius: 999px; color: #fff;
+         font-size: 0.7rem; font-weight: 600; letter-spacing: 0.03em;
+         margin-left: 0.45rem; padding: 0.05rem 0.45rem;
+         text-transform: uppercase; white-space: nowrap; }
   @media (max-width: 560px) {
     .header { align-items: flex-start; }
     .meta-row { display: block; margin-bottom: 0.5rem; }
@@ -554,11 +587,21 @@ function render(data) {
   }
   for (const character of data.characters) {
     const tr = document.createElement("tr");
-    if (character.finished) tr.className = "finished";
+    if (character.finished) tr.classList.add("finished");
+    if (character.in_progress) tr.classList.add("in-progress");
 
     const name = document.createElement("td");
     name.className = "name";
-    name.textContent = character.name;
+    const nameText = document.createElement("span");
+    nameText.className = "name-text";
+    nameText.textContent = character.name;
+    name.appendChild(nameText);
+    if (character.in_progress) {
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "in progress";
+      name.appendChild(tag);
+    }
 
     const barCell = document.createElement("td");
     barCell.className = "bar-cell";

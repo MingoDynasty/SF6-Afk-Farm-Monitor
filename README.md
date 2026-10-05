@@ -126,7 +126,9 @@ Example Pushover notification:
 
 An optional local web page shows live farm progress at a glance: a per-character table with 0–100 progress bars
 (unfinished characters first), the finished-character tally, how long it has been since the last battle-count change,
-and the current health (OK / stuck / API down / auth expired). It is a **separate, read-only process** from the
+and the current health (OK / stuck / API down / auth expired). The character being farmed is highlighted and tagged
+"in progress": it is the last character the monitor saw gain a battle, so after a swap the highlight moves once the new
+character finishes its first match. It is a **separate, read-only process** from the
 monitor — it only reads `data/database.json` and `data/notification_state.json`, so it never affects monitoring and can
 be started or stopped independently of `app.py`.
 
@@ -154,7 +156,8 @@ same regardless of the working directory it is launched from:
 - `config.toml` (repository root) — your settings and secrets. You create this from `example.toml`; it is gitignored.
 - `data/database.json` — the per-character battle counts. This is the single state artifact that the monitor and the
   status page share.
-- `data/notification_state.json` — incident / alert-deduplication state (open incidents and the stuck-farm timer).
+- `data/notification_state.json` — incident / alert-deduplication state (open incidents and the stuck-farm timer), plus
+  the characters that last gained a battle, which the status page highlights.
 - `logs/info.log` and `logs/debug.log` — rotating run logs (`debug.log` is far chattier and rotates on a larger
   budget).
 
