@@ -69,6 +69,22 @@ have all landed with tests (93 passing) and clean Black/mypy.
 - **Decisions made in-session:** <small calls not covered by the docs>
 -->
 
+### 2026-10-05 — Session 13: dependency upgrade
+- **Branch / commits:** `claude/update-dependencies-cde952`; `578f20d` bump the required uv version to 0.12.23, `1151ee7` upgrade locked dependencies, `5fae19a` bump actions/checkout to v7.0.1 and setup-uv to v10.2.0; this log entry follows on the same branch.
+- **Done:** Every dependency moved to its latest release except ruff, which stays on the 0.15 line. No source file changed.
+  - **uv pin (`pyproject.toml`):** `[tool.uv] required-version` moves from `==0.12.13` to `==0.12.23`, the latest release and the version installed on this machine. `uv` refused to start before this.
+  - **Lock (`uv.lock`):** `uv lock --upgrade` updated 44 packages and added one (`ast-serialize`, a new mypy dependency). Direct dependencies: humanize 4.15.0 → 4.16.0, pydantic 2.12.5 → 2.13.5, datamodel-code-generator 0.53.0 → 0.83.0, mypy 1.19.1 → 2.4.0, pre-commit 4.6.0 → 4.6.2, pytest 9.0.3 → 9.1.1, ruff 0.15.20 → 0.15.22, types-requests 2.33.0.20260518 → 2.33.0.20260906. requests 2.34.2, schedule 1.2.2, pytest-cov 7.1.0 and pywebview 6.2.1 were already current. The version floors in `pyproject.toml` are unchanged.
+  - **Pre-commit (`.pre-commit-config.yaml`):** the ruff-pre-commit rev follows the lock, `v0.15.20` → `v0.15.22`.
+  - **CI (`.github/workflows/ci.yml`):** `actions/checkout` v7.0.0 → v7.0.1 and `astral-sh/setup-uv` v8.2.0 → v10.2.0, both pinned by commit SHA. setup-uv v9 and v10 change cache defaults only, and this workflow sets `enable-cache: false`.
+- **Verified by:** on the upgraded lock, in the worktree venv: `uv lock --check` (clean), `uv sync --locked`, `uv run ruff format --check .` (clean), `uv run ruff check .` (clean), `uv run mypy` (no issues), `uv run pytest` → **156 passed** (unchanged). The same gates were green on the old lock after the pin bump. `uv sync --locked --group login` installed, and `import webview` succeeded beside the upgraded pydantic, requests and urllib3. Both action SHAs were read from the tag refs with `git ls-remote`. The monitor was not run against live Buckler, and `datamodel-codegen` was not re-run against `model.py`.
+- **Not done / carried over:**
+  - **Ruff 0.16.** Latest is 0.16.10. It is a breaking release: the default rule set grows from 59 to 413 rules, which this repo inherits through `extend-select`, and `ruff format` now formats Python blocks in Markdown. Tried against this tree, it reports 27 lint findings (14 UP017, 5 UP045, 5 SIM117, and one each of SIM102, S110, PLR0917; 23 auto-fixable) and would reformat `docs/CODEBASE_REVIEW.md` and `docs/PUSHOVER_RETRY_POLICY_PROPOSAL.md`. With the rule set frozen to today's selection, PLR0917 (newly stable under `PL`) is the only lint finding.
+  - Nothing caps ruff below 0.16, so the next `uv lock --upgrade` selects it again. Re-hold it with `uv lock --upgrade-package ruff==<0.15.x>` until the 0.16 change lands.
+- **Decisions made in-session:**
+  - **Ruled by the user, 2026-10-05:** ruff stays at 0.15.22 in this change; 0.16 is separate work.
+  - **Ruled by the user, 2026-10-05:** the two action pins are bumped here, so `ci.yml` now differs from the `tooling-spec: python-v2` canonical block in those two lines until the spec is updated.
+  - **The hold lives in the lock, not in `pyproject.toml`.** A `<0.16` cap would change the canonical ruff floor for a temporary hold.
+
 ### 2026-10-05 — Session 12: in-progress character highlight on the status page
 - **Branch / commits:** `claude/current-character-progress-ba8435`; `a6d3f4d` record the characters that last gained a battle, `b0dc626` highlight the character in progress on the status page, `231d0f6` show in-progress with an icon and its own bar color, `8e9c3c2` hide the swap-needed pill when no swap is needed, `444a55a` draw both status icons as matching inline SVG, `71551c2` let the status page header wrap instead of overflowing; this log entry follows on the same branch.
 - **Done:** The status page now shows which character is being farmed. Before this it could only guess, by sorting unfinished characters by descending count, which put the character actually farming (15 battles) below two idle ones (92 and 89).
