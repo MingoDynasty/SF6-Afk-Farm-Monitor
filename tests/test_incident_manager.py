@@ -496,6 +496,34 @@ def test_swap_needed_crossing_by_the_open_incidents_character_stays_silent(
     assert len(fake_client.sent) == 1
 
 
+def test_withdraw_swap_needed_closes_an_incident_for_an_unfinished_character(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # Juri is finished as far as this caller knows: nothing to withdraw.
+    manager.withdraw_swap_needed(unfinished_characters=["Cammy", "Ryu"])
+    assert SWAP_NEEDED in manager.incidents
+    assert fake_client.cancelled == []
+
+    manager.withdraw_swap_needed(unfinished_characters=["Cammy", "Juri"])
+    assert SWAP_NEEDED not in manager.incidents
+    assert fake_client.cancelled == [receipt]
+
+    # With no incident open it is a no-op.
+    manager.withdraw_swap_needed(unfinished_characters=["Juri"])
+    assert fake_client.cancelled == [receipt]
+
+
 class FlakyPushoverClient(FakePushoverClient):
     """A fake client whose next ``send`` can be forced to fail (return None)."""
 

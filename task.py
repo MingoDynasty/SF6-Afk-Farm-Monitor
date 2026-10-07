@@ -181,11 +181,24 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
             )
         )
 
+    # A poll with no usable previous data has nothing to diff, so it cannot
+    # open a swap incident. It can still check one that is already open: an
+    # incident opened under the old rule, at 100 battles, may name a character
+    # whose points are short of the reward, and its alert would have the user
+    # swap away and strand that character. This is the poll that first sees
+    # points after an upgrade, so it withdraws such an incident.
+    unfinished_characters = [
+        character
+        for character, progress in current_character_to_progress.items()
+        if progress.point < MASTER_COLOR_THRESHOLD
+    ]
+
     # On first init, we don't have any previous data.
     database_path = Path(database_filename)
     if not database_path.exists():
         write_to_database(current_character_to_progress, database_path)
         incident_manager.record_change()
+        incident_manager.withdraw_swap_needed(unfinished_characters)
         return
 
     # Compare current data with previous data
@@ -193,6 +206,7 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
     if previous_character_to_progress is None:
         write_to_database(current_character_to_progress, database_path)
         incident_manager.record_change()
+        incident_manager.withdraw_swap_needed(unfinished_characters)
         return
 
     # Battle counts say the farm is playing: they move on every match, so they

@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -325,6 +325,23 @@ class IncidentManager:
                 # _maintain_emergency page on the next poll (P1).
                 record_on_send_failure=True,
             )
+
+    def withdraw_swap_needed(self, unfinished_characters: Collection[str]) -> None:
+        """Close the swap incident if its character turns out not to be finished.
+
+        An incident opened under the old rule, at 100 battles, can name a
+        character whose points are still short of the reward. Its alert tells
+        the user to swap away from that character, which would strand it.
+        """
+        incident = self.incidents.get(SWAP_NEEDED)
+        if incident is None or incident["character"] not in unfinished_characters:
+            return
+        logger.warning(
+            "%s incident for %s withdrawn: its Master color is not unlocked yet.",
+            SWAP_NEEDED,
+            incident["character"],
+        )
+        self._close_emergency(SWAP_NEEDED, incident)
 
     def _evaluate_emergency(
         self, kind: str, tag: str, active: bool, build_message: Callable[[], str]

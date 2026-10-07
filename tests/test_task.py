@@ -405,6 +405,131 @@ def test_points_crossing_is_kept_while_the_previous_swap_is_open(
     assert "Cammy" in fake_client.sent[1]["message"]
 
 
+def open_legacy_swap_incident(
+    manager: IncidentManager, fake_client: FakePushoverClient, character: str
+) -> str:
+    """Open a swap incident the way the monitor did under the 100-battle rule.
+
+    Returns its receipt.
+    """
+    manager.evaluate_swap_needed(
+        increased_characters=[character],
+        crossed_characters=[character],
+        build_message=lambda name: (
+            f"Finished Master color reward for character: {name}."
+        ),
+    )
+    receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+    assert isinstance(receipt, str)
+    return receipt
+
+
+def test_upgrade_withdraws_a_swap_alert_the_points_do_not_support(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config(battle_count_timeout=600)
+    database_path = tmp_path / "database.json"
+    # The old monitor paged for Juri at 100 battles, and stored bare counts.
+    old_manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    legacy_receipt = open_legacy_swap_incident(old_manager, fake_client, "Juri")
+    database_path.write_text(json.dumps({"Juri": 100, "Cammy": 5}), encoding="utf-8")
+
+    # The upgraded monitor starts and loads that incident from disk.
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    manager.reconcile_on_startup()
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
+
+    # Its first poll finds Juri one point short: her reward is still locked, so
+    # the alert telling the user to swap away from her has to go.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 5}),
+        points={"Juri": 99, "Cammy": 5},
+    )
+
+    assert SWAP_NEEDED not in manager.incidents
+    assert fake_client.cancelled == [legacy_receipt]
+    assert len(fake_client.sent) == 1
+
+    # The alert comes back when the reward really unlocks.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 101, "Cammy": 5}),
+        points={"Juri": 100, "Cammy": 5},
+    )
+
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
+    assert len(fake_client.sent) == 2
+
+
+def test_upgrade_keeps_a_swap_alert_the_points_support(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config(battle_count_timeout=600)
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    legacy_receipt = open_legacy_swap_incident(manager, fake_client, "Juri")
+    database_path.write_text(json.dumps({"Juri": 100, "Cammy": 5}), encoding="utf-8")
+
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 5}),
+    )
+
+    # Juri has her 100 points, so the alert was right and stays as it was.
+    assert manager.incidents[SWAP_NEEDED]["receipt"] == legacy_receipt
+    assert fake_client.cancelled == []
+    assert len(fake_client.sent) == 1
+
+
+def test_first_poll_without_a_database_withdraws_an_unsupported_swap_alert(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config(battle_count_timeout=600)
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    # The incident outlived the database (the file was deleted before upgrading).
+    legacy_receipt = open_legacy_swap_incident(manager, fake_client, "Juri")
+
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100}),
+        points={"Juri": 99},
+    )
+
+    assert SWAP_NEEDED not in manager.incidents
+    assert fake_client.cancelled == [legacy_receipt]
+
+
 def test_character_without_a_master_pass_track_is_stored_with_zero_points(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
