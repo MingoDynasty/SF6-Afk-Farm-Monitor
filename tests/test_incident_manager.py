@@ -423,6 +423,79 @@ def test_swap_needed_crossing_while_closing_opens_new_incident(
     assert "Cammy" in fake_client.sent[1]["message"]
 
 
+def test_swap_needed_crossing_without_an_increase_replaces_the_open_incident(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    # A crossing is counted in points, which can show one poll before the
+    # battle count moves, so it can arrive with no gaining character. It is
+    # still a different character earning a point: the swap happened, and the
+    # crossing is gone after this poll's database write.
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    juri_receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    manager.evaluate_swap_needed(
+        increased_characters=[],
+        crossed_characters=["Cammy"],
+        build_message=swap_message,
+    )
+
+    assert fake_client.cancelled == [juri_receipt]
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert len(fake_client.sent) == 2
+    assert "Cammy" in fake_client.sent[1]["message"]
+
+    # Cammy's battle count catches up on the next poll: the same character
+    # gaining keeps her incident open and silent.
+    cammy_receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+    fake_client.receipt_info[cammy_receipt] = {"acknowledged": 0}
+    fake_clock.advance(60)
+    manager.evaluate_swap_needed(
+        increased_characters=["Cammy"],
+        crossed_characters=[],
+        build_message=swap_message,
+    )
+
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert manager.incidents[SWAP_NEEDED]["receipt"] == cammy_receipt
+    assert len(fake_client.sent) == 2
+
+
+def test_swap_needed_crossing_by_the_open_incidents_character_stays_silent(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    manager = build_manager(fake_client, make_config, fake_clock, tmp_path)
+    manager.evaluate_swap_needed(
+        increased_characters=["Juri"],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+    receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+    fake_client.receipt_info[receipt] = {"acknowledged": 0}
+
+    # Only a *different* character's crossing says the user swapped.
+    fake_clock.advance(60)
+    manager.evaluate_swap_needed(
+        increased_characters=[],
+        crossed_characters=["Juri"],
+        build_message=swap_message,
+    )
+
+    assert manager.incidents[SWAP_NEEDED]["receipt"] == receipt
+    assert fake_client.cancelled == []
+    assert len(fake_client.sent) == 1
+
+
 class FlakyPushoverClient(FakePushoverClient):
     """A fake client whose next ``send`` can be forced to fail (return None)."""
 

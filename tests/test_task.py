@@ -349,6 +349,62 @@ def test_points_crossing_without_a_battle_count_change_opens_swap_needed(
     assert len(fake_client.sent) == 1
 
 
+def test_points_crossing_is_kept_while_the_previous_swap_is_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    # A long timeout keeps the stuck incident out of this test's flat poll.
+    config_data = make_config(battle_count_timeout=600)
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Juri": 99, "Cammy": 99})
+
+    # Juri finishes: her swap incident opens.
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 99}),
+    )
+    juri_receipt = manager.incidents[SWAP_NEEDED]["receipt"]
+
+    # The user swaps onto Cammy, one match from done. Buckler reports that
+    # match's point a poll before its battle count, so no character has gained
+    # a battle here. Cammy's crossing must not be dropped behind Juri's
+    # incident: it is saved to the database on this poll and never seen again.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 99}),
+        points={"Juri": 100, "Cammy": 100},
+    )
+
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert fake_client.cancelled == [juri_receipt]
+
+    # Cammy's battle count catches up. Her incident stays, with no second alert.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 100}),
+    )
+
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Cammy"
+    assert [sent["tags"] for sent in fake_client.sent] == [SWAP_NEEDED_TAG] * 2
+    assert "Cammy" in fake_client.sent[1]["message"]
+
+
 def test_character_without_a_master_pass_track_is_stored_with_zero_points(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

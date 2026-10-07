@@ -282,15 +282,20 @@ class IncidentManager:
         # Master-color swap incident (§7), replacing the per-match re-fire from
         # commit ffb650b. Emergency policy identical to stuck_farm; the only
         # differences are the open and close signals:
-        #   open  = a character's count crosses 100 this poll
-        #   close = a *different* character's count starts increasing (the user
-        #           actually swapped). Continued matches on the finished
-        #           character keep the incident OPEN and silent (modulo re-arm).
+        #   open  = a character's Master Pass points cross 100 this poll
+        #   close = a *different* character starts gaining (the user actually
+        #           swapped). Continued matches on the finished character keep
+        #           the incident OPEN and silent (modulo re-arm).
         incident = self.incidents.get(SWAP_NEEDED)
         if incident is not None:
             # Always present: set via ``extra`` when the swap incident is opened.
             finished = incident["character"]
-            if not any(character != finished for character in increased_characters):
+            # Increases are counted in battles and crossings in points, and a
+            # match's point can show one poll before its battle count. A
+            # crossing can therefore arrive with no increase beside it, and it
+            # proves the swap just as an increase does.
+            gaining = [*increased_characters, *crossed_characters]
+            if not any(character != finished for character in gaining):
                 # The finished character is still gaining (or the poll is flat):
                 # stay OPEN and silent, modulo re-raise/re-arm.
                 self._maintain_emergency(
