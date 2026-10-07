@@ -2,10 +2,11 @@
 # This is an example configuration file.
 #
 
-# User code of the CFN profile to monitor
+# User code of the CFN profile to monitor. The Buckler cookies below must belong
+# to this same account: Master Pass points are only served for the logged-in one.
 user_code = 1234567890
 
-# Buckler season ID to query
+# Buckler season ID to query, for both the battle counts and the Master Pass
 target_season_id = 12
 
 # How often to poll for updates (in seconds)
