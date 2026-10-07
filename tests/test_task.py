@@ -23,6 +23,7 @@ from incident_manager import (
     IncidentManager,
 )
 from model import CharacterWinRate, WinRateResponse
+from task import CharacterProgress
 
 
 def make_response(character_counts: dict[str, int]) -> WinRateResponse:
@@ -44,12 +45,40 @@ def make_response(character_counts: dict[str, int]) -> WinRateResponse:
     )
 
 
-def write_database(database_path: Path, data: dict[str, int]) -> None:
+def write_database(
+    database_path: Path,
+    battle_counts: dict[str, int],
+    points: dict[str, int] | None = None,
+) -> None:
+    """Persist progress in the monitor's format.
+
+    Points mirror the battle counts unless given, which is the usual case: a
+    battle awards a point.
+    """
+    points = battle_counts if points is None else points
+    data = {
+        name: {"battle_count": battle_count, "point": points[name]}
+        for name, battle_count in battle_counts.items()
+    }
     database_path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def read_database(database_path: Path) -> dict[str, int]:
+def read_database(database_path: Path) -> dict[str, dict[str, int]]:
     return json.loads(database_path.read_text(encoding="utf-8"))
+
+
+def read_battle_counts(database_path: Path) -> dict[str, int]:
+    return {
+        name: progress["battle_count"]
+        for name, progress in read_database(database_path).items()
+    }
+
+
+def read_points(database_path: Path) -> dict[str, int]:
+    return {
+        name: progress["point"]
+        for name, progress in read_database(database_path).items()
+    }
 
 
 def run_task_with_response(
@@ -58,11 +87,28 @@ def run_task_with_response(
     incident_manager: IncidentManager,
     database_path: Path,
     win_rate_response: WinRateResponse,
+    points: dict[str, int] | None = None,
 ) -> None:
+    """Run one poll against a faked Buckler.
+
+    Master Pass points mirror the battle counts unless ``points`` names them
+    per character; a character left out of ``points`` has no Master Pass track.
+    """
+
     def fake_get_character_win_rates(config: ConfigData) -> WinRateResponse:
         return win_rate_response
 
+    def fake_get_master_pass_points(config: ConfigData) -> dict[int, int]:
+        return {
+            row.character_id: row.battle_count
+            if points is None
+            else points[row.character_name]
+            for row in win_rate_response.character_win_rates
+            if points is None or row.character_name in points
+        }
+
     monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
+    monkeypatch.setattr(task, "get_master_pass_points", fake_get_master_pass_points)
 
     task.do_task(config_data, incident_manager, database_path)
 
@@ -98,7 +144,7 @@ def test_new_character_counts_as_difference_and_is_persisted(
         make_response({"Ryu": 10, "Akuma": 1}),
     )
 
-    assert read_database(database_path) == {"Akuma": 1, "Ryu": 10}
+    assert read_battle_counts(database_path) == {"Akuma": 1, "Ryu": 10}
     assert fake_client.sent == []
 
 
@@ -123,7 +169,7 @@ def test_threshold_crossing_opens_swap_needed_incident(
         make_response({"Juri": 100}),
     )
 
-    assert read_database(database_path) == {"Juri": 100}
+    assert read_battle_counts(database_path) == {"Juri": 100}
     # The 99 -> 100 crossing now opens a swap_needed emergency incident
     # (replaces the ffb650b per-match re-fire).
     assert SWAP_NEEDED in manager.incidents
@@ -209,6 +255,200 @@ def test_swap_needed_closes_when_different_character_increases(
     assert fake_client.cancelled == [receipt]
 
 
+def test_swap_needed_waits_for_the_points_not_the_battle_count(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Juri": 99})
+
+    # The 100th battle awards no point. The reward is still locked, so paging
+    # for a swap now would strand Juri one point short.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100}),
+        points={"Juri": 99},
+    )
+
+    assert SWAP_NEEDED not in manager.incidents
+    assert fake_client.sent == []
+    assert read_database(database_path) == {"Juri": {"battle_count": 100, "point": 99}}
+    # The battle still counts as farm progress.
+    assert manager.last_change_at == fake_clock()
+    assert read_last_increased_characters(tmp_path) == ["Juri"]
+
+    # The next battle awards the 100th point.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 101}),
+        points={"Juri": 100},
+    )
+
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
+    assert len(fake_client.sent) == 1
+
+
+def test_points_crossing_without_a_battle_count_change_opens_swap_needed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    # A long timeout keeps the stuck incident out of this test's two polls.
+    config_data = make_config(battle_count_timeout=600)
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Juri": 99})
+    last_change_at = manager.last_change_at
+
+    # Buckler has been seen to report a match's point one poll before its
+    # battle count. The crossing is on this poll and would be gone by the next.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 99}),
+        points={"Juri": 100},
+    )
+
+    assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
+    assert read_points(database_path) == {"Juri": 100}
+    # Only a battle count moves the stuck timer.
+    assert manager.last_change_at == last_change_at
+
+    # The battle count catching up is the same character: open and silent.
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100}),
+        points={"Juri": 100},
+    )
+
+    assert SWAP_NEEDED in manager.incidents
+    assert len(fake_client.sent) == 1
+
+
+def test_character_without_a_master_pass_track_is_stored_with_zero_points(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Ryu": 5, "Random": 1}),
+        points={"Ryu": 5},
+    )
+
+    assert read_database(database_path) == {
+        "Random": {"battle_count": 1, "point": 0},
+        "Ryu": {"battle_count": 5, "point": 5},
+    }
+
+
+def test_database_from_before_points_is_rewritten_as_first_init(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    # The shape the monitor wrote before it stored points.
+    database_path.write_text(json.dumps({"Juri": 99, "Cammy": 5}), encoding="utf-8")
+
+    run_task_with_response(
+        monkeypatch,
+        config_data,
+        manager,
+        database_path,
+        make_response({"Juri": 100, "Cammy": 5}),
+    )
+
+    assert read_database(database_path) == {
+        "Cammy": {"battle_count": 5, "point": 5},
+        "Juri": {"battle_count": 100, "point": 100},
+    }
+    # The upgrade poll has no usable previous counts to diff against, so it
+    # alerts on nothing, like any first init.
+    assert manager.incidents == {}
+    assert fake_client.sent == []
+
+
+@pytest.mark.parametrize(
+    ("exception", "incident"),
+    [
+        (AuthExpiredError("Buckler returned HTTP 403"), AUTH_EXPIRED),
+        (HTTPError("HTTP 502"), API_DOWN),
+        (ValueError("Buckler returned no open Master Pass for season 12"), API_DOWN),
+    ],
+)
+def test_master_pass_failure_fails_the_poll_like_a_win_rate_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    exception: Exception,
+    incident: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+    write_database(database_path, {"Juri": 99})
+
+    def fake_get_character_win_rates(config: ConfigData) -> WinRateResponse:
+        return make_response({"Juri": 100})
+
+    def fake_get_master_pass_points(config: ConfigData) -> dict[int, int]:
+        raise exception
+
+    monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
+    monkeypatch.setattr(task, "get_master_pass_points", fake_get_master_pass_points)
+
+    # Two polls: an outage is only confirmed on the second consecutive failure.
+    task.do_task(config_data, manager, database_path)
+    task.do_task(config_data, manager, database_path)
+
+    assert list(manager.incidents) == [incident]
+    # Without points the poll knows nothing about rewards, so it records nothing.
+    assert read_battle_counts(database_path) == {"Juri": 99}
+
+
 def test_stuck_detection_opens_emergency_incident(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -233,7 +473,7 @@ def test_stuck_detection_opens_emergency_incident(
         make_response({"Manon": 42}),
     )
 
-    assert read_database(database_path) == {"Manon": 42}
+    assert read_battle_counts(database_path) == {"Manon": 42}
     # Stuck farm is an emergency incident.
     assert len(fake_client.sent) == 1
     assert fake_client.sent[0]["priority"] == 2
@@ -266,7 +506,7 @@ def test_count_change_resets_stuck_timer(
         make_response({"Manon": 43}),
     )
 
-    assert read_database(database_path) == {"Manon": 43}
+    assert read_battle_counts(database_path) == {"Manon": 43}
     assert fake_client.sent == []
     assert STUCK_FARM not in manager.incidents
 
@@ -329,7 +569,7 @@ def test_poll_without_an_increase_keeps_the_recorded_characters(
             monkeypatch, config_data, manager, database_path, make_response(counts)
         )
 
-    assert read_database(database_path) == {"Elena": 0, "Mai": 0}
+    assert read_battle_counts(database_path) == {"Elena": 0, "Mai": 0}
     assert read_last_increased_characters(tmp_path) == ["Elena"]
 
 
@@ -380,7 +620,7 @@ def test_corrupt_database_is_replaced_from_current_response(
         make_response({"Chun-Li": 7}),
     )
 
-    assert read_database(database_path) == {"Chun-Li": 7}
+    assert read_battle_counts(database_path) == {"Chun-Li": 7}
     assert fake_client.sent == []
 
 
@@ -448,7 +688,7 @@ def test_single_failed_poll_is_one_warning_and_no_alert(
     state = json.loads((tmp_path / "notification_state.json").read_text("utf-8"))
     assert API_DOWN not in state["incidents"]
     # The missed poll loses nothing: the next one diffs against the last write.
-    assert read_database(database_path) == {"Mai": 59}
+    assert read_battle_counts(database_path) == {"Mai": 59}
 
 
 @pytest.mark.parametrize(
@@ -755,12 +995,12 @@ def test_write_to_database_uses_atomic_replace(
 
     monkeypatch.setattr(task.os, "replace", record_replace)
 
-    task.write_to_database({"Ryu": 1}, database_path)
+    task.write_to_database({"Ryu": CharacterProgress(1, 0)}, database_path)
 
     temporary_database_path = database_path.with_name("database.json.tmp")
     assert replace_calls == [(temporary_database_path, database_path)]
     assert not temporary_database_path.exists()
-    assert read_database(database_path) == {"Ryu": 1}
+    assert read_database(database_path) == {"Ryu": {"battle_count": 1, "point": 0}}
 
 
 def test_write_to_database_sorts_keys_alphabetically(
@@ -773,7 +1013,14 @@ def test_write_to_database_sorts_keys_alphabetically(
     monkeypatch.chdir(tmp_path)
     database_path = tmp_path / "database.json"
 
-    task.write_to_database({"Ryu": 1, "Akuma": 2, "Cammy": 3}, database_path)
+    task.write_to_database(
+        {
+            "Ryu": CharacterProgress(1, 1),
+            "Akuma": CharacterProgress(2, 2),
+            "Cammy": CharacterProgress(3, 3),
+        },
+        database_path,
+    )
 
     # json.loads preserves the file's key order, so this reflects on-disk order.
     written = json.loads(database_path.read_text(encoding="utf-8"))
