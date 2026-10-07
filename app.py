@@ -7,11 +7,48 @@ from logging.handlers import RotatingFileHandler
 
 import schedule
 
-from config import load_config
+from api_service import get_logged_in_short_id
+from config import ConfigData, load_config
 from incident_manager import IncidentManager
 from notifier_client import PushoverClient
 from paths import DATA_DIR, LOGS_DIR
 from task import do_task
+
+logger = logging.getLogger(__name__)
+
+ACCOUNT_MISMATCH_MESSAGE = (
+    "The Buckler cookies in config.toml belong to account %s, but user_code is %s. "
+    "Buckler serves Master Pass points only for the logged-in account, so the "
+    "monitor could not see a Master color unlock. Run `uv run python login.py`, "
+    "log in as the monitored account, then start the monitor again."
+)
+
+
+def check_monitored_account(config: ConfigData) -> None:
+    """Exit if the Buckler cookies belong to a different account than ``user_code``.
+
+    Buckler serves Master Pass points only for the logged-in account. Another
+    account's cookies answer with that account's points, so the swap alert
+    would never fire and nothing else would look wrong. The cookies are read
+    once at startup, so one check here covers the whole run.
+
+    A check that cannot complete does not stop the monitor: expired cookies and
+    a Buckler outage are classified, and alerted on, by the first poll.
+    """
+    try:
+        logged_in_short_id = get_logged_in_short_id(config)
+    except Exception as exc:  # noqa: BLE001  # The first poll reports the cause.
+        logger.warning(
+            "Could not confirm which account the Buckler cookies belong to "
+            "(%s: %s); continuing.",
+            type(exc).__name__,
+            exc,
+        )
+        return
+
+    if logged_in_short_id != config.user_code:
+        logger.error(ACCOUNT_MISMATCH_MESSAGE, logged_in_short_id, config.user_code)
+        raise SystemExit(1)
 
 
 def main() -> None:
@@ -62,7 +99,7 @@ def main() -> None:
     debug_file_handler.setLevel(logging.DEBUG)
     logging.getLogger().addHandler(debug_file_handler)
 
-    logger = logging.getLogger(__name__)
+    check_monitored_account(config)
 
     pushover_client = PushoverClient(config.pushover_app_key, config.pushover_user_key)
     incident_manager = IncidentManager(pushover_client, config)

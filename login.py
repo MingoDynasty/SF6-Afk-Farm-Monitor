@@ -34,7 +34,11 @@ from typing import Any, NamedTuple, Optional, TextIO
 
 from pydantic import ValidationError
 
-from api_service import AuthExpiredError, get_character_win_rates
+from api_service import (
+    AuthExpiredError,
+    get_character_win_rates,
+    get_logged_in_short_id,
+)
 from config import ConfigData, load_config, update_buckler_cookies
 from model import WinRateResponse
 
@@ -44,6 +48,7 @@ POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
 WinRateFetcher = Callable[[ConfigData], WinRateResponse]
+ShortIdFetcher = Callable[[ConfigData], int]
 
 
 def _iter_cookie_pairs(cookies: Any) -> Iterator[tuple[str, Optional[str]]]:
@@ -270,14 +275,21 @@ def verify_cookies(
     cookies: dict[str, str],
     *,
     win_rate_fetcher: Optional[WinRateFetcher] = None,
+    short_id_fetcher: Optional[ShortIdFetcher] = None,
 ) -> str:
     """Probe the real API with the captured cookies.
 
-    Returns ``"verified"`` (the API accepted them), ``"rejected"`` (auth
-    expired — the capture is unusable, do not write), or ``"unverified"`` (some
-    other error, e.g. the network was down — the cookies are probably fine).
+    Returns ``"verified"`` (the API accepted them and they belong to
+    ``user_code``), ``"wrong_account"`` (they work, but for a different account
+    than ``user_code`` — the monitor would read that account's Master Pass, do
+    not write), ``"rejected"`` (auth expired — the capture is unusable, do not
+    write), or ``"unverified"`` (some other error, e.g. the network was down —
+    the cookies are probably fine).
     """
     fetcher = get_character_win_rates if win_rate_fetcher is None else win_rate_fetcher
+    fetch_short_id = (
+        get_logged_in_short_id if short_id_fetcher is None else short_id_fetcher
+    )
     verify_config = dataclasses.replace(
         config,
         buckler_id=cookies["buckler_id"],
@@ -286,14 +298,17 @@ def verify_cookies(
     )
     try:
         fetcher(verify_config)
+        logged_in_short_id = fetch_short_id(verify_config)
     except AuthExpiredError:
         return "rejected"
     except Exception:  # noqa: BLE001  # Non-auth failures leave verification unknown.
         return "unverified"
+    if logged_in_short_id != config.user_code:
+        return "wrong_account"
     return "verified"
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0911  # Each guard clause reports its own failure.
     """Capture, verify, and persist fresh Buckler session cookies."""
     try:
         config = load_config()
@@ -341,6 +356,16 @@ def main() -> int:
         print(
             "login: the captured cookies were rejected by the API (login may not have "
             "completed). Nothing written -- try again.",
+            file=sys.stderr,
+        )
+        return 1
+    if status == "wrong_account":
+        print(
+            "login: the captured cookies belong to a different account than "
+            f"user_code ({config.user_code}) in config.toml. Buckler serves Master "
+            "Pass points only for the logged-in account, so the monitor needs the "
+            "monitored account's cookies. Nothing written -- log in as that "
+            "account and try again.",
             file=sys.stderr,
         )
         return 1
