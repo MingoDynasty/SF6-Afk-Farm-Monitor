@@ -25,8 +25,11 @@ from status_server import (
 NOW = 1_000_000.0
 
 
-def _database(**counts: int) -> dict[str, int]:
-    return dict(counts)
+def _database(**points: int) -> dict[str, dict[str, int]]:
+    """Rows in the monitor's format, each with as many battles as points."""
+    return {
+        name: {"battle_count": point, "point": point} for name, point in points.items()
+    }
 
 
 def _state(
@@ -197,7 +200,7 @@ def test_progress_clamped_to_100_for_finished_character() -> None:
     luke = status["characters"][0]
     assert luke["finished"] is True
     assert luke["progress"] == 100
-    assert luke["battle_count"] == 106
+    assert luke["point"] == 106
 
 
 def test_exactly_100_counts_as_finished() -> None:
@@ -208,15 +211,49 @@ def test_exactly_100_counts_as_finished() -> None:
 
 def test_invalid_battle_count_row_is_skipped() -> None:
     # A non-integer value (corrupt row) is dropped rather than crashing.
-    status = build_status({"Ken": 16, "Broken": "oops"}, _state(), NOW)
+    status = build_status({**_database(Ken=16), "Broken": "oops"}, _state(), NOW)
     assert [row["name"] for row in status["characters"]] == ["Ken"]
+
+
+def test_finished_and_progress_follow_points_not_battle_count() -> None:
+    # 100 battles, but one awarded no point: the Master color is still locked.
+    database = {"Juri": {"battle_count": 100, "point": 99}}
+    status = build_status(database, _state(), NOW)
+    juri = status["characters"][0]
+    assert juri["finished"] is False
+    assert juri["progress"] == 99
+    assert juri["point"] == 99
+    assert juri["battle_count"] == 100
+    assert status["finished_count"] == 0
+
+
+def test_unfinished_rows_sort_by_points_not_battle_count() -> None:
+    database = {
+        "Ken": {"battle_count": 50, "point": 48},
+        "Mai": {"battle_count": 49, "point": 49},
+    }
+    status = build_status(database, _state(), NOW)
+    assert [row["name"] for row in status["characters"]] == ["Mai", "Ken"]
+
+
+def test_rows_without_points_are_skipped() -> None:
+    # A bare battle count is the shape the monitor wrote before it stored
+    # points. It must not be shown as if it were points.
+    database = {"Ken": 16, "Mai": {"battle_count": 5}, **_database(Ryu=3)}
+    status = build_status(database, _state(), NOW)
+    assert [row["name"] for row in status["characters"]] == ["Ryu"]
+
+
+def test_status_page_shows_points_in_the_count_column() -> None:
+    assert '<th class="count">Points</th>' in PAGE_HTML
+    assert "count.textContent = character.point;" in PAGE_HTML
 
 
 def test_non_farmable_characters_excluded_from_rows_and_tally() -> None:
     # "Random" has no Master-color target, so it must not appear in the table
     # or inflate the denominator. "Any" never reaches the file (the monitor
     # strips it) but is excluded defensively the same way.
-    database = {"Random": 0, "Any": 5, "Ken": 16, "Luke": 106}
+    database = _database(Random=0, Any=5, Ken=16, Luke=106)
     status = build_status(database, _state(), NOW)
     names = [row["name"] for row in status["characters"]]
     assert names == ["Ken", "Luke"]
@@ -253,7 +290,7 @@ def test_in_progress_marks_every_character_in_a_tied_poll() -> None:
 
 
 def test_in_progress_never_marks_a_non_farmable_character() -> None:
-    database = {"Alex": 73, "Random": 1, "Ken": 3}
+    database = _database(Alex=73, Random=1, Ken=3)
     state = _state(last_increased_characters=["Alex", "Random"])
     status = build_status(database, state, NOW)
     assert [row["name"] for row in status["characters"]] == ["Alex", "Ken"]
