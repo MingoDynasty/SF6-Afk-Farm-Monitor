@@ -181,32 +181,35 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
             )
         )
 
-    # A poll with no usable previous data has nothing to diff, so it cannot
-    # open a swap incident. It can still check one that is already open: an
-    # incident opened under the old rule, at 100 battles, may name a character
-    # whose points are short of the reward, and its alert would have the user
-    # swap away and strand that character. This is the poll that first sees
-    # points after an upgrade, so it withdraws such an incident.
-    unfinished_characters = [
-        character
-        for character, progress in current_character_to_progress.items()
-        if progress.point < MASTER_COLOR_THRESHOLD
-    ]
-
-    # On first init, we don't have any previous data.
+    # On first init there is no previous data, and an unusable file (corrupt, or
+    # from before points were stored) is treated the same way.
     database_path = Path(database_filename)
-    if not database_path.exists():
-        write_to_database(current_character_to_progress, database_path)
-        incident_manager.record_change()
-        incident_manager.withdraw_swap_needed(unfinished_characters)
-        return
-
-    # Compare current data with previous data
-    previous_character_to_progress = read_database(database_path)
+    previous_character_to_progress = (
+        read_database(database_path) if database_path.exists() else None
+    )
     if previous_character_to_progress is None:
-        write_to_database(current_character_to_progress, database_path)
+        # With nothing to diff, this poll cannot open a swap incident. It can
+        # still check one that is already open: an incident opened under the
+        # old rule, at 100 battles, may name a character whose points are short
+        # of the reward, and its alert would have the user swap away and strand
+        # that character. This is the poll that first sees points after an
+        # upgrade, so it withdraws such an incident.
+        #
+        # The order matters. Writing the database is what stops later polls
+        # from coming through here, so it goes last: if the withdrawal or the
+        # state save fails, or the process dies in between, the old database is
+        # still in place and the next poll withdraws again. record_change saves
+        # the state unconditionally, which also covers a withdrawal whose own
+        # save failed on an earlier attempt.
+        incident_manager.withdraw_swap_needed(
+            [
+                character
+                for character, progress in current_character_to_progress.items()
+                if progress.point < MASTER_COLOR_THRESHOLD
+            ]
+        )
         incident_manager.record_change()
-        incident_manager.withdraw_swap_needed(unfinished_characters)
+        write_to_database(current_character_to_progress, database_path)
         return
 
     # Battle counts say the farm is playing: they move on every match, so they

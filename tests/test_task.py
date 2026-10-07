@@ -530,6 +530,71 @@ def test_first_poll_without_a_database_withdraws_an_unsupported_swap_alert(
     assert fake_client.cancelled == [legacy_receipt]
 
 
+@pytest.mark.parametrize("restart", [True, False])
+@pytest.mark.parametrize("old_database", [{"Juri": 100, "Cammy": 5}, None])
+def test_interrupted_upgrade_withdraws_the_swap_alert_on_the_next_poll(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    restart: bool,
+    old_database: dict[str, int] | None,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config(battle_count_timeout=600)
+    database_path = tmp_path / "database.json"
+    state_path = tmp_path / "notification_state.json"
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    legacy_receipt = open_legacy_swap_incident(manager, fake_client, "Juri")
+    if old_database is not None:
+        database_path.write_text(json.dumps(old_database), encoding="utf-8")
+
+    # Saving the state file fails once. On Windows that is what a save does
+    # while another process, such as the status page, has the file open.
+    real_replace = os.replace
+    failures = [PermissionError("[WinError 5] Access is denied")]
+
+    def replace_failing_once(source: str | Path, destination: str | Path) -> None:
+        if Path(destination) == state_path and failures:
+            raise failures.pop()
+        real_replace(source, destination)
+
+    monkeypatch.setattr(task.os, "replace", replace_failing_once)
+    response = make_response({"Juri": 100, "Cammy": 5})
+    points = {"Juri": 99, "Cammy": 5}
+
+    with pytest.raises(PermissionError):
+        run_task_with_response(
+            monkeypatch, config_data, manager, database_path, response, points=points
+        )
+
+    # The upgrade was not published half-done. The old database is what makes
+    # the next poll an upgrade poll again, so it must still be in place.
+    if old_database is None:
+        assert not database_path.exists()
+    else:
+        assert json.loads(database_path.read_text(encoding="utf-8")) == old_database
+
+    if restart:
+        # The failed save left Juri's incident on disk.
+        manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+        manager.reconcile_on_startup()
+        assert manager.incidents[SWAP_NEEDED]["character"] == "Juri"
+
+    fake_clock.advance(60)
+    run_task_with_response(
+        monkeypatch, config_data, manager, database_path, response, points=points
+    )
+
+    assert SWAP_NEEDED not in manager.incidents
+    assert legacy_receipt in fake_client.cancelled
+    assert read_database(database_path)["Juri"] == {"battle_count": 100, "point": 99}
+    # The withdrawal reached the disk, so a later restart does not bring it back.
+    reloaded = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    assert SWAP_NEEDED not in reloaded.incidents
+
+
 def test_character_without_a_master_pass_track_is_stored_with_zero_points(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
