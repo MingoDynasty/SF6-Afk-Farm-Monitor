@@ -354,9 +354,12 @@ def test_master_pass_without_the_configured_season_fails_loudly(
 
     with caplog.at_level(logging.DEBUG):
         # Returning no points here would read as "nobody has finished" forever.
-        with pytest.raises(ValueError, match="season 12") as error:
+        with pytest.raises(
+            api_service.MasterPassSeasonError, match="season 12"
+        ) as error:
             api_service.get_master_pass_points(config_data)
 
+    # The message is what the user is paged with, so it says what to change.
     assert "target_season_id" in str(error.value)
     assert response.text in caplog.text
 

@@ -32,6 +32,14 @@ class AuthExpiredError(Exception):
     """
 
 
+class MasterPassSeasonError(ValueError):
+    """Buckler has no open Master Pass for the configured season.
+
+    Expected at every season rollover, until ``target_season_id`` is updated.
+    The message names the seasons Buckler returned and the setting to change.
+    """
+
+
 def _cookie_header(config: ConfigData) -> str:
     return (
         f"buckler_id={config.buckler_id}; "
@@ -143,8 +151,8 @@ def get_master_pass_points(config: ConfigData) -> dict[int, int]:
     """Fetch the logged-in account's Master Pass points, keyed by character ID.
 
     Buckler serves the pass only for the account the cookies belong to; the
-    endpoint takes no player parameter. Raises ``ValueError`` when the
-    configured season has no open pass, so a season rollover fails loudly
+    endpoint takes no player parameter. Raises ``MasterPassSeasonError`` when
+    the configured season has no open pass, so a season rollover fails loudly
     instead of reading as zero points.
     """
     response = _get(config, MASTER_PASS_URL)
@@ -172,7 +180,7 @@ def get_master_pass_points(config: ConfigData) -> dict[int, int]:
         response.text,
     )
     returned_seasons = [master_pass.season_id for master_pass in master_passes]
-    raise ValueError(
+    raise MasterPassSeasonError(
         f"Buckler returned no open Master Pass for season {config.target_season_id} "
         f"(seasons returned: {returned_seasons}). Check target_season_id in config.toml."
     )

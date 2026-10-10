@@ -13,6 +13,7 @@ from requests import RequestException
 
 from api_service import (
     AuthExpiredError,
+    MasterPassSeasonError,
     get_character_win_rates,
     get_master_pass_points,
 )
@@ -151,6 +152,14 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
         incident_manager.evaluate_api_down(
             active=True, down_message="Capcom Buckler website down?"
         )
+        return
+    except MasterPassSeasonError as exc:
+        # A season rollover, not a bug: target_season_id names a season whose
+        # Master Pass is not open. The exception text says which seasons Buckler
+        # returned and what to change, so it is both the log line and the push,
+        # with no traceback.
+        logger.error("%s", exc)
+        incident_manager.evaluate_api_down(active=True, down_message=str(exc))
         return
     except Exception:
         # Request failures were handled above, so this is a response that no

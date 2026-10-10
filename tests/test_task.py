@@ -10,7 +10,7 @@ from conftest import FakeClock, FakePushoverClient
 from requests import HTTPError
 
 import task
-from api_service import AuthExpiredError
+from api_service import AuthExpiredError, MasterPassSeasonError
 from config import ConfigData
 from incident_manager import (
     API_DOWN,
@@ -24,6 +24,11 @@ from incident_manager import (
 )
 from model import CharacterWinRate, WinRateResponse
 from task import CharacterProgress
+
+WRONG_SEASON_MESSAGE = (
+    "Buckler returned no open Master Pass for season 12 (seasons returned: [13]). "
+    "Check target_season_id in config.toml."
+)
 
 
 def make_response(character_counts: dict[str, int]) -> WinRateResponse:
@@ -659,7 +664,8 @@ def test_database_from_before_points_is_rewritten_as_first_init(
     [
         (AuthExpiredError("Buckler returned HTTP 403"), AUTH_EXPIRED),
         (HTTPError("HTTP 502"), API_DOWN),
-        (ValueError("Buckler returned no open Master Pass for season 12"), API_DOWN),
+        (MasterPassSeasonError(WRONG_SEASON_MESSAGE), API_DOWN),
+        (ValueError("a response nobody anticipated"), API_DOWN),
     ],
 )
 def test_master_pass_failure_fails_the_poll_like_a_win_rate_failure(
@@ -693,6 +699,48 @@ def test_master_pass_failure_fails_the_poll_like_a_win_rate_failure(
     assert list(manager.incidents) == [incident]
     # Without points the poll knows nothing about rewards, so it records nothing.
     assert read_battle_counts(database_path) == {"Juri": 99}
+
+
+def test_wrong_season_pages_with_what_to_change_and_logs_no_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_data = make_config()
+    manager = build_manager(fake_client, config_data, fake_clock, tmp_path)
+    database_path = tmp_path / "database.json"
+
+    def fake_get_character_win_rates(config: ConfigData) -> WinRateResponse:
+        return make_response({"Juri": 100})
+
+    def fake_get_master_pass_points(config: ConfigData) -> dict[int, int]:
+        raise MasterPassSeasonError(WRONG_SEASON_MESSAGE)
+
+    monkeypatch.setattr(task, "get_character_win_rates", fake_get_character_win_rates)
+    monkeypatch.setattr(task, "get_master_pass_points", fake_get_master_pass_points)
+
+    with caplog.at_level(logging.DEBUG):
+        task.do_task(config_data, manager, database_path)
+        fake_clock.advance(60)
+        task.do_task(config_data, manager, database_path)
+
+    # A season rollover is expected, not a bug: the push says what to change
+    # instead of pointing at the monitor, and each poll logs one line.
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0]["priority"] == 1
+    assert fake_client.sent[0]["message"] == WRONG_SEASON_MESSAGE
+    task_records = [record for record in caplog.records if record.name == "task"]
+    assert [record.getMessage() for record in task_records] == [
+        WRONG_SEASON_MESSAGE,
+        WRONG_SEASON_MESSAGE,
+    ]
+    assert all(record.levelno == logging.ERROR for record in task_records)
+    assert all(record.exc_info is None for record in task_records)
+    assert not database_path.exists()
 
 
 def test_stuck_detection_opens_emergency_incident(
