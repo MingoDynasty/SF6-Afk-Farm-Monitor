@@ -24,7 +24,7 @@ account, so the monitor refuses to start on another account's cookies.
 
 `target_season_id` is the Buckler season to query, for both the battle counts and the Master Pass. Update it when Capcom
 starts a new season. While it names a season with no open Master Pass, every poll fails and the monitor raises its
-API-down alert; `logs/info.log` lists the seasons Buckler returned.
+API-down alert, which lists the seasons Buckler returned and tells you to check `target_season_id`.
 
 ### Stuck-farm alerts (emergency priority)
 
