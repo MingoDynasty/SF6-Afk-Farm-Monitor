@@ -158,10 +158,9 @@ def get_master_pass_points(config: ConfigData) -> dict[int, int]:
 
     master_passes = master_pass_response.message_list.master_rate_pass_list
     for master_pass in master_passes:
-        if (
-            master_pass.season_id == config.target_season_id
-            and master_pass.characters is not None
-        ):
+        # A pass with no characters, null or an empty list, is not open. An
+        # empty list returned as points would put every character at zero.
+        if master_pass.season_id == config.target_season_id and master_pass.characters:
             return {
                 character.character_id: character.point
                 for character in master_pass.characters

@@ -337,6 +337,9 @@ def test_get_master_pass_points_reads_the_configured_season(
         [master_pass(13, {2: 5})],
         # The configured season is listed but its pass is closed.
         [master_pass(12, None)],
+        # A pass that lists no characters is not open either: an open one lists
+        # every character, at zero points until it plays.
+        [master_pass(12, {})],
         [],
     ],
 )
