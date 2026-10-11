@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 DATABASE_FILE = DATA_DIR / "database.json"
 NOTIFICATION_STATE_FILE = DATA_DIR / "notification_state.json"
 
-# A character's Master color is complete at 100 battles (task.py uses the same
-# threshold to decide a swap is needed).
+# A character's Master color is complete at 100 Master Pass points (task.py
+# uses the same threshold to decide a swap is needed).
 FINISHED_THRESHOLD = 100
 
 # Character-select pseudo-entries that are not Master-color farm targets and so
@@ -98,39 +98,45 @@ def _parse_in_progress(state: Any) -> frozenset[str]:
 def _build_character_rows(
     database: Any, in_progress: frozenset[str]
 ) -> list[dict[str, Any]]:
-    """Turn the ``{name: battle_count}`` database into display rows, sorted
-    unfinished-first then by descending battle count, then finished characters
-    alphabetically. Rows named in ``in_progress`` are flagged for the page to
-    highlight; the flag does not affect the order (highlight only, by
-    decision), and a poll where several characters gained flags all of them."""
+    """Turn the ``{name: {"battle_count": n, "point": p}}`` database into
+    display rows, sorted unfinished-first then by descending points, then
+    finished characters alphabetically. Progress and "finished" follow the
+    Master Pass points, which are what unlock the Master color; the battle
+    count can run a battle or two ahead of them. Rows named in ``in_progress``
+    are flagged for the page to highlight; the flag does not affect the order
+    (highlight only, by decision), and a poll where several characters gained
+    flags all of them."""
     if not isinstance(database, dict):
         return []
     rows: list[dict[str, Any]] = []
-    for name, count in database.items():
+    for name, progress in database.items():
         if name in NON_FARMABLE_CHARACTERS:
             continue
         try:
-            battle_count = int(count)
-        except TypeError, ValueError:  # PEP 758 multi-except (Python 3.14 target)
-            # A corrupt/hand-edited row whose value is not int-like: skip it
-            # rather than failing the whole page.
+            battle_count = int(progress["battle_count"])
+            point = int(progress["point"])
+        except TypeError, ValueError, KeyError:  # PEP 758 (Python 3.14 target)
+            # A corrupt/hand-edited row, or one from before the monitor stored
+            # points (a bare battle count): skip it rather than failing the
+            # whole page. The monitor rewrites the file on its next poll.
             continue
-        finished = battle_count >= FINISHED_THRESHOLD
+        finished = point >= FINISHED_THRESHOLD
         rows.append(
             {
                 "name": str(name),
                 "battle_count": battle_count,
+                "point": point,
                 "finished": finished,
                 # 0-100 fill for the progress bar; finished characters clamp to
-                # 100 even though their raw count can exceed it.
-                "progress": max(0, min(battle_count, FINISHED_THRESHOLD)),
+                # 100 even though their raw points can exceed it.
+                "progress": max(0, min(point, FINISHED_THRESHOLD)),
                 "in_progress": str(name) in in_progress,
             }
         )
     rows.sort(
         key=lambda row: (
             row["finished"],
-            0 if row["finished"] else -row["battle_count"],
+            0 if row["finished"] else -row["point"],
             row["name"],
         )
     )
@@ -452,7 +458,7 @@ PAGE_HTML = """<!DOCTYPE html>
   </div>
   <table>
     <thead><tr>
-      <th>Character</th><th class="bar-cell">Progress to __FINISHED_THRESHOLD__</th><th class="count">Battles</th>
+      <th>Character</th><th class="bar-cell">Progress to __FINISHED_THRESHOLD__</th><th class="count">Points</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
@@ -660,7 +666,7 @@ function render(data) {
 
     const count = document.createElement("td");
     count.className = "count";
-    count.textContent = character.battle_count;
+    count.textContent = character.point;
 
     tr.append(name, barCell, count);
     rows.appendChild(tr);

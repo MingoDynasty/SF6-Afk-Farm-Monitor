@@ -1,4 +1,4 @@
-"""Poll Buckler, persist battle counts, and drive monitor incidents."""
+"""Poll Buckler, persist character progress, and drive monitor incidents."""
 
 import json
 import logging
@@ -6,11 +6,17 @@ import os
 from collections.abc import Mapping
 from datetime import timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 import humanize
 from requests import RequestException
 
-from api_service import AuthExpiredError, get_character_win_rates
+from api_service import (
+    AuthExpiredError,
+    MasterPassSeasonError,
+    get_character_win_rates,
+    get_master_pass_points,
+)
 from config import ConfigData
 from incident_manager import IncidentManager
 from paths import DATA_DIR
@@ -19,9 +25,11 @@ logger = logging.getLogger(__name__)
 
 DATABASE_FILENAME = DATA_DIR / "database.json"
 
-# A character's Master color reward completes at 100 battles; crossing this
-# threshold is what opens a swap_needed incident. The status page uses the same
-# number for its finished/progress display (status_server.FINISHED_THRESHOLD).
+# A character's Master color reward unlocks at 100 Master Pass points; crossing
+# this threshold is what opens a swap_needed incident. Battle count usually
+# equals the points but can run a battle or two ahead (a battle that awards no
+# point), so it is not the trigger. The status page uses the same number for
+# its finished/progress display (status_server.FINISHED_THRESHOLD).
 MASTER_COLOR_THRESHOLD = 100
 
 # "Any" is the Buckler "all characters" aggregate row, not a real character, so
@@ -43,24 +51,38 @@ UNEXPECTED_FAILURE_MESSAGE = (
 )
 
 
+class CharacterProgress(NamedTuple):
+    """One character's battle count and Master Pass points at a poll."""
+
+    battle_count: int
+    point: int
+
+
 def write_to_database(
-    data: Mapping[str, int], database_filename: str | Path = DATABASE_FILENAME
+    data: Mapping[str, CharacterProgress],
+    database_filename: str | Path = DATABASE_FILENAME,
 ) -> None:
-    """Atomically persist the latest per-character battle counts."""
+    """Atomically persist the latest per-character progress."""
     database_path = Path(database_filename)
     temporary_database_path = database_path.with_name(f"{database_path.name}.tmp")
     with temporary_database_path.open("w", encoding="utf-8") as file:
         # sort_keys keeps the on-disk file alphabetical (previously achieved by
         # building a SortedDict; review finding L8 dropped that dependency).
-        json_string = json.dumps(data, indent=2, sort_keys=True)
+        json_string = json.dumps(
+            {name: progress._asdict() for name, progress in data.items()},
+            indent=2,
+            sort_keys=True,
+        )
         file.write(json_string)
         file.write("\n")
 
     os.replace(temporary_database_path, database_path)
 
 
-def read_database(database_filename: str | Path) -> dict[str, int] | None:
-    """Load persisted battle counts, returning None when unusable."""
+def read_database(
+    database_filename: str | Path,
+) -> dict[str, CharacterProgress] | None:
+    """Load persisted character progress, returning None when unusable."""
     database_path = Path(database_filename)
     try:
         with database_path.open(encoding="utf-8") as file:
@@ -80,14 +102,20 @@ def read_database(database_filename: str | Path) -> dict[str, int] | None:
         )
         return None
 
+    # A file from before Master Pass points were stored maps each name to a
+    # bare battle count. It fails here like any other unusable file, and the
+    # poll rewrites it in the current shape.
     try:
         return {
-            str(character_name): int(battle_count)
-            for character_name, battle_count in data.items()
+            str(character_name): CharacterProgress(
+                battle_count=int(progress["battle_count"]),
+                point=int(progress["point"]),
+            )
+            for character_name, progress in data.items()
         }
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, KeyError) as exc:
         logger.warning(
-            "%s contained invalid battle counts (%s); treating it as first init.",
+            "%s contained invalid character progress (%s); treating it as first init.",
             database_path,
             exc.__class__.__name__,
         )
@@ -104,6 +132,7 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
 
     try:
         win_rate_response = get_character_win_rates(config)
+        master_pass_points = get_master_pass_points(config)
     except AuthExpiredError as exc:
         # Expired cookies are actionable and blind all monitoring; an emergency
         # incident nags until the user refreshes them (review finding M3). The
@@ -124,6 +153,14 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
             active=True, down_message="Capcom Buckler website down?"
         )
         return
+    except MasterPassSeasonError as exc:
+        # A season rollover, not a bug: target_season_id names a season whose
+        # Master Pass is not open. The exception text says which seasons Buckler
+        # returned and what to change, so it is both the log line and the push,
+        # with no traceback.
+        logger.error("%s", exc)
+        incident_manager.evaluate_api_down(active=True, down_message=str(exc))
+        return
     except Exception:
         # Request failures were handled above, so this is a response that no
         # longer validates or a bug here; the traceback says which.
@@ -139,49 +176,88 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
         active=False, build_message=lambda: AUTH_EXPIRED_MESSAGE
     )
 
-    current_character_to_battle_count: dict[str, int] = {}
+    # The win-rate roster supplies the names; the Master Pass has only IDs.
+    current_character_to_progress: dict[str, CharacterProgress] = {}
     for character_win_rate in win_rate_response.character_win_rates:
         if character_win_rate.character_name == AGGREGATE_CHARACTER:
             continue
-        current_character_to_battle_count[character_win_rate.character_name] = (
-            character_win_rate.battle_count
+        current_character_to_progress[character_win_rate.character_name] = (
+            CharacterProgress(
+                battle_count=character_win_rate.battle_count,
+                # A roster entry with no Master Pass track ("Random") has no
+                # points to earn.
+                point=master_pass_points.get(character_win_rate.character_id, 0),
+            )
         )
 
-    # On first init, we don't have any previous data.
+    # On first init there is no previous data, and an unusable file (corrupt, or
+    # from before points were stored) is treated the same way.
     database_path = Path(database_filename)
-    if not database_path.exists():
-        write_to_database(current_character_to_battle_count, database_path)
+    previous_character_to_progress = (
+        read_database(database_path) if database_path.exists() else None
+    )
+    if previous_character_to_progress is None:
+        # With nothing to diff, this poll cannot open a swap incident. It can
+        # still check one that is already open: an incident opened under the
+        # old rule, at 100 battles, may name a character whose points are short
+        # of the reward, and its alert would have the user swap away and strand
+        # that character. This is the poll that first sees points after an
+        # upgrade, so it withdraws such an incident.
+        #
+        # The order matters. Writing the database is what stops later polls
+        # from coming through here, so it goes last: if the withdrawal or the
+        # state save fails, or the process dies in between, the old database is
+        # still in place and the next poll withdraws again. record_change saves
+        # the state unconditionally, which also covers a withdrawal whose own
+        # save failed on an earlier attempt.
+        incident_manager.withdraw_swap_needed(
+            [
+                character
+                for character, progress in current_character_to_progress.items()
+                if progress.point < MASTER_COLOR_THRESHOLD
+            ]
+        )
         incident_manager.record_change()
+        write_to_database(current_character_to_progress, database_path)
         return
 
-    # Compare current data with previous data
-    previous_character_to_battle_count = read_database(database_path)
-    if previous_character_to_battle_count is None:
-        write_to_database(current_character_to_battle_count, database_path)
-        incident_manager.record_change()
-        return
-
-    data_differs = False
+    # Battle counts say the farm is playing: they move on every match, so they
+    # drive the stuck timer and the in-progress highlight. Points say a reward
+    # is unlocked, so they drive the swap incident. The two are compared
+    # separately because either can move on a poll where the other does not.
+    battle_counts_differ = False
+    points_differ = False
     increased_characters: list[str] = []
     crossed_threshold: list[str] = []
-    for character, current_battle_count in current_character_to_battle_count.items():
-        if character not in previous_character_to_battle_count:
+    for character, current_progress in current_character_to_progress.items():
+        if character not in previous_character_to_progress:
             logger.warning("Found a new character: %s", character)
-            data_differs = True
+            battle_counts_differ = True
             continue
-        previous_battle_count = previous_character_to_battle_count[character]
-        if current_battle_count == previous_battle_count:
-            continue
-        data_differs = True
-        logger.info(
-            "Character (%s) has a new battle count: %s -> %s",
-            character,
-            previous_battle_count,
-            current_battle_count,
-        )
-        if current_battle_count > previous_battle_count:
-            increased_characters.append(character)
-            if previous_battle_count < MASTER_COLOR_THRESHOLD <= current_battle_count:
+        previous_progress = previous_character_to_progress[character]
+        if current_progress.battle_count != previous_progress.battle_count:
+            battle_counts_differ = True
+            logger.info(
+                "Character (%s) has a new battle count: %s -> %s",
+                character,
+                previous_progress.battle_count,
+                current_progress.battle_count,
+            )
+            if current_progress.battle_count > previous_progress.battle_count:
+                increased_characters.append(character)
+        if current_progress.point != previous_progress.point:
+            points_differ = True
+            logger.info(
+                "Character (%s) has new Master Pass points: %s -> %s",
+                character,
+                previous_progress.point,
+                current_progress.point,
+            )
+            if (
+                previous_progress.point
+                < MASTER_COLOR_THRESHOLD
+                <= current_progress.point
+            ):
                 logger.info("Finished Master color reward for character: %s", character)
                 crossed_threshold.append(character)
 
@@ -189,9 +265,10 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
     # manager) is the stuck-timer source, replacing the database.json mtime
     # check (retires review finding M10). The same write records which
     # characters gained, for the status page's in-progress highlight.
-    if data_differs:
+    if battle_counts_differ:
         incident_manager.record_change(increased_characters)
-        write_to_database(current_character_to_battle_count, database_path)
+    if battle_counts_differ or points_differ:
+        write_to_database(current_character_to_progress, database_path)
 
     stuck = incident_manager.seconds_since_last_change() >= config.battle_count_timeout
 
@@ -203,7 +280,7 @@ def do_task(  # noqa: PLR0912, PLR0915  # Keep the monitor poll sequence linear.
         active=stuck, build_message=build_stuck_message
     )
 
-    # Master-color swap incident (§7): a character crossing 100 opens an
+    # Master-color swap incident (§7): a character crossing 100 points opens an
     # emergency incident that nags until a *different* character starts gaining
     # counts (the swap happened). Replaces the per-match re-fire from ffb650b.
     def build_swap_message(character: str) -> str:

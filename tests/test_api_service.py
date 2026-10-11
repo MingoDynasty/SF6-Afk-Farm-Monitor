@@ -235,3 +235,227 @@ def test_successful_poll_does_not_log_response_body(
     assert response.character_win_rates == []
     # The body is logged ONLY on failure paths (M9).
     assert body_text not in caplog.text
+
+
+# -- Master Pass points and the logged-in account ------------------------------
+
+
+def patch_get(
+    monkeypatch: pytest.MonkeyPatch,
+    response: FakeResponse,
+    captured_request: dict[str, Any] | None = None,
+) -> None:
+    def fake_request(
+        method: str, url: str, headers: dict[str, str], timeout: tuple[int, int]
+    ) -> FakeResponse:
+        if captured_request is not None:
+            captured_request.update(
+                {"method": method, "url": url, "headers": headers, "timeout": timeout}
+            )
+        return response
+
+    monkeypatch.setattr(api_service.requests, "request", fake_request)
+
+
+def master_pass(season_id: int, points: dict[int, int] | None) -> dict[str, Any]:
+    """One season's pass in the shape Buckler returns, extra fields included."""
+    characters = None
+    if points is not None:
+        characters = [
+            {
+                "character_id": character_id,
+                "sort": index,
+                "point": point,
+                "tier_list": [
+                    {
+                        "tier_no": 1,
+                        "tier_point": 100,
+                        "is_received": point >= 100,
+                        "item_list": [
+                            {"item_category": 6, "item_id": "x.png", "num": 1}
+                        ],
+                    }
+                ],
+            }
+            for index, (character_id, point) in enumerate(points.items(), start=1)
+        ]
+    return {
+        "season_id": season_id,
+        "start_at": 1785567600,
+        "end_at": 1793516399,
+        "characters": characters,
+    }
+
+
+def master_pass_response(*passes: dict[str, Any]) -> FakeResponse:
+    body = {"messageList": {"master_rate_pass_list": list(passes)}}
+    return FakeResponse(status_code=200, json_data=body, text=json.dumps(body))
+
+
+def login_data_response(short_id: int, logged_in: bool) -> FakeResponse:
+    body = {
+        "loginUser": {
+            "platformId": 3 if logged_in else 0,
+            "shortId": short_id,
+            "fighterId": "Fighter" if logged_in else "",
+            "flg": logged_in,
+            "regionId": 1 if logged_in else 0,
+        }
+    }
+    return FakeResponse(status_code=200, json_data=body, text=json.dumps(body))
+
+
+def test_get_master_pass_points_reads_the_configured_season(
+    monkeypatch: pytest.MonkeyPatch, config_data: ConfigData
+) -> None:
+    captured_request: dict[str, Any] = {}
+    patch_get(
+        monkeypatch,
+        master_pass_response(
+            master_pass(11, {2: 7}),
+            master_pass(config_data.target_season_id, {253: 201, 2: 101, 21: 0}),
+        ),
+        captured_request,
+    )
+
+    points = api_service.get_master_pass_points(config_data)
+
+    assert points == {253: 201, 2: 101, 21: 0}
+    assert captured_request["method"] == "GET"
+    assert captured_request["url"] == api_service.MASTER_PASS_URL
+    assert captured_request["headers"]["Cookie"] == (
+        "buckler_id=buckler-id; buckler_r_id=buckler-r-id; "
+        "buckler_praise_date=1234567890123"
+    )
+    assert captured_request["timeout"] == api_service.REQUEST_TIMEOUT
+
+
+@pytest.mark.parametrize(
+    "passes",
+    [
+        # The season rolled over and config.toml still names the old one.
+        [master_pass(13, {2: 5})],
+        # The configured season is listed but its pass is closed.
+        [master_pass(12, None)],
+        # A pass that lists no characters is not open either: an open one lists
+        # every character, at zero points until it plays.
+        [master_pass(12, {})],
+        [],
+    ],
+)
+def test_master_pass_without_the_configured_season_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+    config_data: ConfigData,
+    caplog: pytest.LogCaptureFixture,
+    passes: list[dict[str, Any]],
+) -> None:
+    response = master_pass_response(*passes)
+    patch_get(monkeypatch, response)
+
+    with caplog.at_level(logging.DEBUG):
+        # Returning no points here would read as "nobody has finished" forever.
+        with pytest.raises(
+            api_service.MasterPassSeasonError, match="season 12"
+        ) as error:
+            api_service.get_master_pass_points(config_data)
+
+    # The message is what the user is paged with, so it says what to change.
+    assert "target_season_id" in str(error.value)
+    assert response.text in caplog.text
+
+
+def test_get_logged_in_short_id_returns_the_account(
+    monkeypatch: pytest.MonkeyPatch, config_data: ConfigData
+) -> None:
+    captured_request: dict[str, Any] = {}
+    patch_get(
+        monkeypatch, login_data_response(1234567890, logged_in=True), captured_request
+    )
+
+    assert api_service.get_logged_in_short_id(config_data) == 1234567890
+    assert captured_request["method"] == "GET"
+    assert captured_request["url"] == api_service.LOGIN_DATA_URL
+
+
+def test_logged_out_login_data_classified_as_auth_expired(
+    monkeypatch: pytest.MonkeyPatch,
+    config_data: ConfigData,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Logged out, Buckler still answers 200, with a zero short ID.
+    response = login_data_response(0, logged_in=False)
+    patch_get(monkeypatch, response)
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(api_service.AuthExpiredError):
+            api_service.get_logged_in_short_id(config_data)
+
+    assert response.text in caplog.text
+
+
+ACCOUNT_FETCHERS = [
+    api_service.get_master_pass_points,
+    api_service.get_logged_in_short_id,
+]
+
+
+@pytest.mark.parametrize("fetch", ACCOUNT_FETCHERS)
+def test_account_endpoints_classify_http_403_as_auth_expired(
+    monkeypatch: pytest.MonkeyPatch,
+    config_data: ConfigData,
+    caplog: pytest.LogCaptureFixture,
+    fetch: Any,
+) -> None:
+    patch_get(
+        monkeypatch, FakeResponse(status_code=403, text='{"message": "not logged in"}')
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(api_service.AuthExpiredError):
+            fetch(config_data)
+
+    assert '{"message": "not logged in"}' in caplog.text
+
+
+@pytest.mark.parametrize("fetch", ACCOUNT_FETCHERS)
+def test_account_endpoints_classify_http_500_as_outage(
+    monkeypatch: pytest.MonkeyPatch, config_data: ConfigData, fetch: Any
+) -> None:
+    patch_get(monkeypatch, FakeResponse(status_code=500, text="server error"))
+
+    with pytest.raises(HTTPError):
+        fetch(config_data)
+
+
+@pytest.mark.parametrize("fetch", ACCOUNT_FETCHERS)
+def test_account_endpoints_classify_html_200_as_auth_expired(
+    monkeypatch: pytest.MonkeyPatch, config_data: ConfigData, fetch: Any
+) -> None:
+    patch_get(
+        monkeypatch,
+        FakeResponse(status_code=200, text="<html>log in</html>", json_error=True),
+    )
+
+    with pytest.raises(api_service.AuthExpiredError):
+        fetch(config_data)
+
+
+@pytest.mark.parametrize("fetch", ACCOUNT_FETCHERS)
+def test_account_endpoints_reraise_schema_drift_and_log_body(
+    monkeypatch: pytest.MonkeyPatch,
+    config_data: ConfigData,
+    caplog: pytest.LogCaptureFixture,
+    fetch: Any,
+) -> None:
+    body_text = '{"renamed": {}}'
+    patch_get(
+        monkeypatch,
+        FakeResponse(status_code=200, json_data={"renamed": {}}, text=body_text),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        # A changed shape must not be mistaken for expired cookies.
+        with pytest.raises(ValidationError):
+            fetch(config_data)
+
+    assert body_text in caplog.text

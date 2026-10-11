@@ -5,8 +5,8 @@ This app helps the SF6 Afk Farm by checking for
 1. When the afk farm is stuck, often due to Capcom error codes or opponent disconnects.
 2. When a new Master color is unlocked, and it is time to swap characters.
 
-To achieve this, this app polls the Capcom Buckler API for "battle counts" of each character. Once one of the above two
-conditions are met, then a notification is sent via Pushover.
+To achieve this, this app polls the Capcom Buckler API for each character's "battle count" and Master Pass points. Once
+one of the above two conditions are met, then a notification is sent via Pushover.
 
 ## First Time Setup
 
@@ -19,8 +19,12 @@ conditions are met, then a notification is sent via Pushover.
     4. pushover_app_key, pushover_user_key
 3. Feel free to change any other settings inside the TOML file, or leave them at their defaults.
 
-`target_season_id` is the Buckler season to query. Update it when Capcom starts recording battle counts under a new
-season.
+`user_code` must be the account you log into Buckler as. Buckler serves Master Pass points only for the logged-in
+account, so the monitor refuses to start on another account's cookies.
+
+`target_season_id` is the Buckler season to query, for both the battle counts and the Master Pass. Update it when Capcom
+starts a new season. While it names a season with no open Master Pass, every poll fails and the monitor raises its
+API-down alert, which lists the seasons Buckler returned and tells you to check `target_season_id`.
 
 ### Stuck-farm alerts (emergency priority)
 
@@ -39,11 +43,13 @@ cancelled) only when the app observes the farm recover (a battle count increment
 
 ### Master-color swap alerts (emergency priority)
 
-When a character's battle count crosses 100 (Master color complete), the app opens an emergency incident telling you to
-swap characters. It nags until a *different* character starts gaining battles — i.e. you actually swapped — so you get
-one alert per swap instead of one notification per match played past 100. Continued matches on the finished character
-keep the incident open and silent. It shares the same `emergency_retry` / `emergency_expire` / `re_alert_after_ack`
-tuning as stuck-farm alerts, and the notification deep-links straight to your Buckler profile.
+When a character's Master Pass points reach 100 (Master color unlocked), the app opens an emergency incident telling you
+to swap characters. The trigger is the points, not the battle count: a battle occasionally awards no point, so the battle
+count can reach 100 a battle or two before the reward unlocks. It nags until a *different* character starts gaining
+battles — i.e. you actually swapped — so you get one alert per swap instead of one notification per match played past
+100. Continued matches on the finished character keep the incident open and silent. It shares the same
+`emergency_retry` / `emergency_expire` / `re_alert_after_ack` tuning as stuck-farm alerts, and the notification
+deep-links straight to your Buckler profile.
 
 > **Deployment note:** emergency priority does *not* bypass your phone's OS-level Do Not Disturb by default. To let an
 > emergency alert (stuck-farm or Master-color swap) wake you overnight, enable **Critical Alerts** for Pushover on iOS,
@@ -65,16 +71,18 @@ This reads `config.toml`, so it must already exist with `user_code` and `target_
 first). Leave the three `buckler_*` values as the example placeholders — `login.py` overwrites them. In particular,
 keep `buckler_praise_date` numeric: blanking it fails config validation before the browser can open.
 
-A browser window opens at the CFN/Buckler site. Log in normally — Capcom ID, plus any MFA/captcha, are handled right
-there in the window. Once you're logged in, the window closes itself, the three cookies are verified against the real
-API, and they're written into `config.toml` for you. Nothing is typed by hand and the cookies never leave your machine.
+A browser window opens at the CFN/Buckler site. Log in normally, as the account named by `user_code` — Capcom ID, plus
+any MFA/captcha, are handled right there in the window. Once you're logged in, the window closes itself, the three
+cookies are verified against the real API, and they're written into `config.toml` for you. If they belong to a different
+account than `user_code`, nothing is written. Nothing is typed by hand and the cookies never leave your machine.
 It also prints when the captured cookies are set to expire, so you have a rough idea of when you'll next need to run it.
 
 If `pywebview` isn't installed, `login.py` prints an install hint and you can fall back to the manual steps below.
 
 ### Manual (fallback): browser DevTools
 
-Log into https://www.streetfighter.com/6/buckler/en/, open your browser's Network Inspector, and copy the three
+Log into https://www.streetfighter.com/6/buckler/en/ as the account named by `user_code`, open your browser's Network
+Inspector, and copy the three
 variables out of a request's **Request Cookies** header into `buckler_id`, `buckler_r_id`, and `buckler_praise_date`
 in `config.toml`.
 
@@ -108,15 +116,15 @@ Example running output:
 
 ```Powershell
 2026-01-18 16:21:23,839 | INFO | __main__ | Scheduling task for every 60 seconds...
-2026-01-18 16:28:28,127 | INFO | task | Character (Manon) has a new battle count: 96 -> 97
-2026-01-18 16:29:28,700 | INFO | task | Character (Manon) has a new battle count: 97 -> 98
 2026-01-18 16:31:29,952 | INFO | task | Character (Manon) has a new battle count: 98 -> 99
+2026-01-18 16:31:29,952 | INFO | task | Character (Manon) has new Master Pass points: 98 -> 99
 2026-01-18 16:32:30,535 | INFO | task | Character (Manon) has a new battle count: 99 -> 100
+2026-01-18 16:32:30,535 | INFO | task | Character (Manon) has new Master Pass points: 99 -> 100
 2026-01-18 16:32:30,535 | INFO | task | Finished Master color reward for character: Manon
 2026-01-18 16:33:31,281 | INFO | task | Character (Manon) has a new battle count: 100 -> 101
+2026-01-18 16:33:31,281 | INFO | task | Character (Manon) has new Master Pass points: 100 -> 101
 2026-01-18 16:35:32,197 | INFO | task | Character (Kimberly) has a new battle count: 0 -> 1
-2026-01-18 16:36:32,780 | INFO | task | Character (Kimberly) has a new battle count: 1 -> 2
-2026-01-18 16:37:33,333 | INFO | task | Character (Kimberly) has a new battle count: 2 -> 3
+2026-01-18 16:35:32,197 | INFO | task | Character (Kimberly) has new Master Pass points: 0 -> 1
 ```
 
 Example Pushover notification:
@@ -124,14 +132,14 @@ Example Pushover notification:
 
 ## Status page
 
-An optional local web page shows live farm progress at a glance: a per-character table with 0–100 progress bars
-(unfinished characters first), the finished-character tally, how long it has been since the last battle-count change,
-and the current health (OK / stuck / API down / auth expired). The character being farmed is highlighted: its row
-is tinted, its bar takes its own color, and a progress icon sits left of its name where finished characters show a
-checkmark. It is the last character the monitor saw gain a battle, so after a swap the highlight moves once the new
-character finishes its first match. It is a **separate, read-only process** from the
-monitor — it only reads `data/database.json` and `data/notification_state.json`, so it never affects monitoring and can
-be started or stopped independently of `app.py`.
+An optional local web page shows live farm progress at a glance: a per-character table with progress bars for Master
+Pass points out of 100 (unfinished characters first), the finished-character tally, how long it has been since the last
+battle-count change, and the current health (OK / stuck / API down / auth expired). The character being farmed is
+highlighted: its row is tinted, its bar takes its own color, and a progress icon sits left of its name where finished
+characters show a checkmark. It is the last character the monitor saw gain a battle, so after a swap the highlight moves
+once the new character finishes its first match. It is a **separate, read-only process** from the monitor — it only
+reads `data/database.json` and `data/notification_state.json`, so it never affects monitoring and can be started or
+stopped independently of `app.py`.
 
 Start it in its own terminal:
 
@@ -147,7 +155,7 @@ re-fetches every 30 seconds; `GET /api/status` returns the same data as JSON.
 - The server binds `0.0.0.0` for LAN access, so the **first** time you reach it from another device Windows will show a
   Firewall prompt — allow it on **Private** networks.
 - There is no authentication; it is intended for your LAN only. Do not port-forward or otherwise expose it to the
-  internet (it serves only character battle counts, never your `config.toml`).
+  internet (it serves only character battle counts and points, never your `config.toml`).
 
 ## Data and logs
 
@@ -155,8 +163,8 @@ All generated state lives under the repository directory, anchored to the source
 same regardless of the working directory it is launched from:
 
 - `config.toml` (repository root) — your settings and secrets. You create this from `example.toml`; it is gitignored.
-- `data/database.json` — the per-character battle counts. This is the single state artifact that the monitor and the
-  status page share.
+- `data/database.json` — the per-character battle counts and Master Pass points. This is the single state artifact that
+  the monitor and the status page share.
 - `data/notification_state.json` — incident / alert-deduplication state (open incidents and the stuck-farm timer), plus
   the characters that last gained a battle, which the status page highlights.
 - `logs/info.log` and `logs/debug.log` — rotating run logs (`debug.log` is far chattier and rotates on a larger

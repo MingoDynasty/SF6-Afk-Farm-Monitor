@@ -70,19 +70,45 @@ def test_extract_cookies_handles_none() -> None:
     assert extract_cookies(None) == {}
 
 
+MONITORED_SHORT_ID = 1234567890  # make_config's user_code
+
+
+def _accepted(config: ConfigData) -> WinRateResponse:
+    return WinRateResponse(character_win_rates=[])
+
+
+def _monitored_account(config: ConfigData) -> int:
+    return MONITORED_SHORT_ID
+
+
+def _fail_if_account_checked(config: ConfigData) -> int:
+    raise AssertionError("the account must not be checked once the API refused")
+
+
 def test_verify_cookies_verified(make_config: Callable[..., ConfigData]) -> None:
     seen: dict[str, ConfigData] = {}
 
     def fetcher(config: ConfigData) -> WinRateResponse:
-        seen["config"] = config
+        seen["win_rate"] = config
         return WinRateResponse(character_win_rates=[])
 
+    def short_id_fetcher(config: ConfigData) -> int:
+        seen["short_id"] = config
+        return MONITORED_SHORT_ID
+
     assert (
-        verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher) == "verified"
+        verify_cookies(
+            make_config(),
+            CAPTURED,
+            win_rate_fetcher=fetcher,
+            short_id_fetcher=short_id_fetcher,
+        )
+        == "verified"
     )
-    # The probe runs with the captured cookies, praise_date coerced to int.
-    assert seen["config"].buckler_id == "id"
-    assert seen["config"].buckler_praise_date == 123
+    # Both probes run with the captured cookies, praise_date coerced to int.
+    for probe in ("win_rate", "short_id"):
+        assert seen[probe].buckler_id == "id"
+        assert seen[probe].buckler_praise_date == 123
 
 
 def test_verify_cookies_rejected(make_config: Callable[..., ConfigData]) -> None:
@@ -90,7 +116,13 @@ def test_verify_cookies_rejected(make_config: Callable[..., ConfigData]) -> None
         raise AuthExpiredError("expired")
 
     assert (
-        verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher) == "rejected"
+        verify_cookies(
+            make_config(),
+            CAPTURED,
+            win_rate_fetcher=fetcher,
+            short_id_fetcher=_fail_if_account_checked,
+        )
+        == "rejected"
     )
 
 
@@ -101,9 +133,102 @@ def test_verify_cookies_unverified_on_other_error(
         raise RuntimeError("network down")
 
     assert (
-        verify_cookies(make_config(), CAPTURED, win_rate_fetcher=fetcher)
+        verify_cookies(
+            make_config(),
+            CAPTURED,
+            win_rate_fetcher=fetcher,
+            short_id_fetcher=_fail_if_account_checked,
+        )
         == "unverified"
     )
+
+
+def test_verify_cookies_wrong_account(make_config: Callable[..., ConfigData]) -> None:
+    # The cookies work, but they are another account's: characterwinrate
+    # answers for any player, so only the account check can tell.
+    assert (
+        verify_cookies(
+            make_config(),
+            CAPTURED,
+            win_rate_fetcher=_accepted,
+            short_id_fetcher=lambda config: 2222222222,
+        )
+        == "wrong_account"
+    )
+
+
+@pytest.mark.parametrize(
+    ("exception", "status"),
+    [
+        (AuthExpiredError("no logged-in account"), "rejected"),
+        (RuntimeError("network down"), "unverified"),
+    ],
+)
+def test_verify_cookies_classifies_a_failed_account_check(
+    make_config: Callable[..., ConfigData], exception: Exception, status: str
+) -> None:
+    def short_id_fetcher(config: ConfigData) -> int:
+        raise exception
+
+    assert (
+        verify_cookies(
+            make_config(),
+            CAPTURED,
+            win_rate_fetcher=_accepted,
+            short_id_fetcher=short_id_fetcher,
+        )
+        == status
+    )
+
+
+def test_main_wrong_account_returns_1_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    make_config: Callable[..., ConfigData],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_if_written(*args: object, **kwargs: object) -> None:
+        raise AssertionError("another account's cookies must not reach config.toml")
+
+    monkeypatch.setattr(login, "load_config", make_config)
+    monkeypatch.setattr(
+        login,
+        "capture_cookies",
+        lambda: login.CaptureResult(cookies=dict(CAPTURED), expiries={}),
+    )
+    monkeypatch.setattr(login, "get_character_win_rates", _accepted)
+    monkeypatch.setattr(login, "get_logged_in_short_id", lambda config: 2222222222)
+    monkeypatch.setattr(login, "update_buckler_cookies", fail_if_written)
+
+    assert login.main() == 1
+    message = capsys.readouterr().err
+    assert "different account" in message
+    assert str(MONITORED_SHORT_ID) in message
+    assert "Nothing written" in message
+
+
+def test_main_writes_the_monitored_accounts_cookies(
+    monkeypatch: pytest.MonkeyPatch, make_config: Callable[..., ConfigData]
+) -> None:
+    written: list[tuple[str, str, int]] = []
+
+    monkeypatch.setattr(login, "load_config", make_config)
+    monkeypatch.setattr(
+        login,
+        "capture_cookies",
+        lambda: login.CaptureResult(cookies=dict(CAPTURED), expiries={}),
+    )
+    monkeypatch.setattr(login, "get_character_win_rates", _accepted)
+    monkeypatch.setattr(login, "get_logged_in_short_id", _monitored_account)
+    monkeypatch.setattr(
+        login,
+        "update_buckler_cookies",
+        lambda buckler_id, buckler_r_id, praise_date: written.append(
+            (buckler_id, buckler_r_id, praise_date)
+        ),
+    )
+
+    assert login.main() == 0
+    assert written == [("id", "r", 123)]
 
 
 def _fail_if_called(*args: object, **kwargs: object) -> None:
