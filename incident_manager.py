@@ -10,9 +10,10 @@ Owns ``notification_state.json``.
 
 import json
 import logging
+import math
 import os
 import time
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,75 @@ PROFILE_LINK_KINDS = frozenset({STUCK_FARM, SWAP_NEEDED})
 PROFILE_LINK_TITLE = "Open Buckler profile"
 
 
+def _is_finite_number(value: object) -> bool:
+    # A JSON true or false loads as a bool, which Python counts as an int.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an integer too large for a float
+        return False
+
+
+def _state_problems(data: object) -> Iterator[tuple[str, str]]:
+    """Yield (field, problem) for each part of a loaded state file that is invalid.
+
+    An absent or null top-level key takes its default, as it did before this
+    check existed: a file older than a key does not have it.
+    """
+    if not isinstance(data, dict):
+        yield "the top level", "not a JSON object"
+        return
+
+    incidents = data.get("incidents")
+    if isinstance(incidents, dict):
+        for kind, incident in incidents.items():
+            yield from _incident_problems(kind, incident)
+    elif incidents is not None:
+        yield "incidents", "not an object"
+
+    # A list is the form before PR #20, and _load_pending_cancel migrates it.
+    pending_cancel = data.get("pending_cancel")
+    if isinstance(pending_cancel, dict):
+        if not all(map(_is_finite_number, pending_cancel.values())):
+            yield "pending_cancel", "a deadline is not a finite number"
+    elif pending_cancel is not None and not isinstance(pending_cancel, list):
+        yield "pending_cancel", "neither an object nor a list"
+
+    last_change_at = data.get("last_change_at")
+    if last_change_at is not None and not _is_finite_number(last_change_at):
+        yield "last_change_at", "not a finite number"
+
+    increased = data.get("last_increased_characters")
+    if increased is not None and not (
+        isinstance(increased, list)
+        and all(isinstance(character, str) for character in increased)
+    ):
+        yield "last_increased_characters", "not a list of strings"
+
+
+def _incident_problems(kind: str, incident: object) -> Iterator[tuple[str, str]]:
+    field = f"incidents.{kind}"
+    if not isinstance(incident, dict):
+        yield field, "not an object"
+        return
+    # None is what a receipt-less incident stores (P1, P2).
+    receipt = incident.get("receipt")
+    if receipt is not None and not isinstance(receipt, str):
+        yield f"{field}.receipt", "not a string"
+    for key in ("opened_at", "expire", "retry", "acked_at"):
+        if key in incident:
+            if not _is_finite_number(incident[key]):
+                yield f"{field}.{key}", "not a finite number"
+        # Every emergency incident has been written with both since phase 1,
+        # and the un-acked expiry check indexes them. retry arrived in PR #20.
+        elif kind in EMERGENCY_TAGS and key in {"opened_at", "expire"}:
+            yield f"{field}.{key}", "missing"
+    character = incident.get("character")
+    if kind == SWAP_NEEDED and not (isinstance(character, str) and character):
+        yield f"{field}.character", "not a non-empty string"
+
+
 class IncidentManager:
     """Runs the §2 state machine and owns ``notification_state.json``."""
 
@@ -102,14 +172,21 @@ class IncidentManager:
     # -- persistence ---------------------------------------------------------
 
     def _load(self) -> bool:
-        """Load state from disk. Returns True if it was missing or corrupt."""
+        """Load state from disk. Returns True if it was missing or corrupt.
+
+        The file is validated here, once, and every later method relies on the
+        shapes this allows. A file that fails is corrupt and is rebuilt whole,
+        not salvaged field by field: the caller's reconcile_on_startup then
+        cancels every emergency alert by tag, which also covers the receipt
+        cancels a dropped incident or deadline still owed.
+        """
         try:
             with self.state_path.open(encoding="utf-8") as file:
                 data = json.load(file)
         except FileNotFoundError:
             self._init_fresh()
             return True
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             logger.warning(
                 "Could not read %s (%s); rebuilding notification state.",
                 self.state_path,
@@ -118,10 +195,17 @@ class IncidentManager:
             self._init_fresh()
             return True
 
-        if not isinstance(data, dict):
+        problem = next(_state_problems(data), None)
+        if problem is not None:
+            field, reason = problem
+            # The field and what is wrong with it, never its value.
             logger.error(
-                "%s did not contain a JSON object; rebuilding notification state.",
+                "%s is corrupt at %s: %s. Rebuilding notification state: every "
+                "incident in the file is lost, and startup cancels any emergency "
+                "alerts still retrying, by tag.",
                 self.state_path,
+                field,
+                reason,
             )
             self._init_fresh()
             return True
@@ -132,11 +216,8 @@ class IncidentManager:
         if self.last_change_at <= 0:
             self.last_change_at = self.clock()
         # Absent from state files written before the key existed.
-        increased = data.get("last_increased_characters")
-        self.last_increased_characters = (
-            [str(character) for character in increased]
-            if isinstance(increased, list)
-            else []
+        self.last_increased_characters = list(
+            data.get("last_increased_characters") or []
         )
         if migrated_pending_cancel:
             self._save()
