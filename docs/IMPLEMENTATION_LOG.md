@@ -69,6 +69,17 @@ have all landed with tests (93 passing) and clean Black/mypy.
 - **Decisions made in-session:** <small calls not covered by the docs>
 -->
 
+### 2026-11-07 — Session 16: tooling spec python-v3 catch-up
+- **Branch / commits:** `claude/tooling-spec-v3`, built on `claude/environment-pins` (PR #28, `3e9d399`); `6c9c8c6` move the workflow to tooling spec python-v3; this log entry follows on the same branch.
+- **Done:** Kickoff K3 of the 2026-11-05 audit, as amended after the 2026-11-06 check: finding F18. `.github/workflows/ci.yml` is now the spec's python-v3 canonical file. It differs from the v2 file in three places: the stamp `# tooling-spec: python-v3`; a workflow-level `concurrency` block, so a new push to a pull request cancels that pull request's superseded run, while a push to `main` gets a group of its own and is never cancelled; and `persist-credentials: false` on checkout, so the job's token is not left in the checkout's git config for later steps. The action pins were already v3's (PR #25). No source file changed; this entry is the PR's one documentation change.
+- **Verified by:** the new file is identical to the spec's canonical block as the vault note has it on 2026-11-07, diffed after normalizing the `os:` line (this repo's value is the canonical `[windows-latest]`), and to the first 45 lines of Corporate-Serf-Dashboard's `ci.yml` on its `main`, which has run it since PR #350. Local gates in the worktree with uv 0.13.6 on CPython 3.14.6: `uv lock --check` (clean), `uv sync --locked` (49 packages, no `Building` line), `uv run ruff format --check .` (clean), `uv run ruff check .` (clean), `uv run mypy` (no issues), `uv run pytest` → **205 passed** (unchanged). The concurrency check ran on the pull request, with the push of this entry superseding the workflow commit's run; both run IDs and their outcomes are in the PR description. The monitor was not run.
+- **Not done / carried over:**
+  - **Merge order:** PR #28 first. Until it merges, this branch carries its four files too.
+  - **The tooling spec's SF6 row** in the vault still says `python-v2` and `==0.12.13`. The replacement row is in the PR description; applying it is the maintainer's.
+- **Decisions made in-session:**
+  - **Built on PR #28, not on `main`.** Both PRs add their entry at the same place in this file, so a branch from `main` conflicts with #28; and the spec row needs #28's pin value, `==0.13.6`.
+  - **This entry is the second push of the concurrency check** and stays the head under review, as the amended kickoff asks.
+
 ### 2026-11-05 — Session 15: environment pins (uv, Python, certifi)
 - **Branch / commits:** `claude/environment-pins`; `79dfa02` bump the required uv version to 0.13.6, `8e6037a` pin the interpreter to Python 3.14 with .python-version, `e3303b6` upgrade certifi to 2026.10.23; this log entry follows on the same branch.
 - **Done:** Kickoff K1 of the 2026-11-05 audit: findings F12 and F17, and the one runtime advisory in F10. No source file changed.
