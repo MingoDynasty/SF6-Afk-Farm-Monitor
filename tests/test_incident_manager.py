@@ -2,6 +2,7 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import FakeClock, FakePushoverClient
@@ -1343,11 +1344,10 @@ def test_record_change_without_increase_keeps_previous_characters(
     [
         # Written before the key existed.
         {"incidents": {}, "last_change_at": 500.0, "pending_cancel": {}},
-        {"incidents": {}, "last_change_at": 500.0, "last_increased_characters": "Ryu"},
         {"incidents": {}, "last_change_at": 500.0, "last_increased_characters": None},
     ],
 )
-def test_missing_or_malformed_increased_characters_load_as_empty(
+def test_missing_or_null_increased_characters_load_as_empty(
     fake_client: FakePushoverClient,
     fake_clock: FakeClock,
     make_config: Callable[..., ConfigData],
@@ -1361,3 +1361,573 @@ def test_missing_or_malformed_increased_characters_load_as_empty(
 
     assert manager.last_increased_characters == []
     assert manager.last_change_at == 500.0
+
+
+# -- corrupt state: validated once at load, rebuilt whole (audit F11, N1) -----
+#
+# A file that parses as JSON but holds a shape the monitor never wrote takes
+# the same path as a file that does not parse: one logged error, a fresh
+# state, and the startup cancel_by_tag sweep. Valid files, and every shape an
+# earlier version wrote, load as they did.
+
+ALL_EMERGENCY_TAGS = [STUCK_FARM_TAG, AUTH_EXPIRED_TAG, SWAP_NEEDED_TAG]
+
+
+def write_state(tmp_path: Path, state: object) -> Path:
+    state_path = tmp_path / "notification_state.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    return state_path
+
+
+def start_manager(
+    fake_client: FakePushoverClient,
+    make_config: Callable[..., ConfigData],
+    fake_clock: FakeClock,
+    state_path: Path,
+    **overrides: object,
+) -> IncidentManager:
+    """Build the manager and reconcile, in the order app.main does."""
+    manager = IncidentManager(
+        fake_client, make_config(**overrides), state_path, clock=fake_clock
+    )
+    manager.reconcile_on_startup()
+    return manager
+
+
+def assert_rebuilt(
+    manager: IncidentManager,
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    state_path: Path,
+) -> None:
+    """The documented rebuild ran: fresh state, saved, every tag cancelled."""
+    assert manager.incidents == {}
+    assert manager.pending_cancel == {}
+    assert manager.last_increased_characters == []
+    assert manager.last_change_at == fake_clock.now
+    assert fake_client.cancelled_tags == ALL_EMERGENCY_TAGS
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {
+        "incidents": {},
+        "last_change_at": fake_clock.now,
+        "last_increased_characters": [],
+        "pending_cancel": {},
+    }
+
+
+def assert_one_corrupt_error(
+    caplog: pytest.LogCaptureFixture, state_path: Path, field: str
+) -> None:
+    errors = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "incident_manager" and record.levelno >= logging.ERROR
+    ]
+    assert len(errors) == 1
+    assert str(state_path) in errors[0]
+    assert f" at {field}: " in errors[0]
+
+
+@pytest.mark.parametrize(
+    ("state", "field"),
+    [
+        pytest.param(
+            {"incidents": {}, "pending_cancel": {"r": "abc"}, "last_change_at": 1.0},
+            "pending_cancel",
+            id="pending_cancel-string-deadline",
+        ),
+        pytest.param(
+            {"incidents": {}, "pending_cancel": {"r": None}, "last_change_at": 1.0},
+            "pending_cancel",
+            id="pending_cancel-null-deadline",
+        ),
+        pytest.param(
+            {"pending_cancel": {"r": float("nan")}},
+            "pending_cancel",
+            id="pending_cancel-NaN-deadline",
+        ),
+        pytest.param(
+            {"pending_cancel": "r"},
+            "pending_cancel",
+            id="pending_cancel-neither-object-nor-list",
+        ),
+        pytest.param(
+            {"incidents": {}, "pending_cancel": {}, "last_change_at": "soon"},
+            "last_change_at",
+            id="last_change_at-string",
+        ),
+        pytest.param(
+            {"last_change_at": "NaN"},
+            "last_change_at",
+            id="last_change_at-NaN-string",
+        ),
+        pytest.param(
+            {"last_change_at": "Infinity"},
+            "last_change_at",
+            id="last_change_at-Infinity-string",
+        ),
+        pytest.param(
+            {"last_change_at": True},
+            "last_change_at",
+            id="last_change_at-boolean",
+        ),
+        pytest.param(
+            {"last_change_at": 10**400},
+            "last_change_at",
+            id="last_change_at-too-large-for-a-float",
+        ),
+        pytest.param(
+            {"last_change_at": 500.0, "last_increased_characters": "Ryu"},
+            "last_increased_characters",
+            id="last_increased_characters-string",
+        ),
+        pytest.param(
+            {"last_change_at": 500.0, "last_increased_characters": ["Ryu", 5]},
+            "last_increased_characters",
+            id="last_increased_characters-non-string-entry",
+        ),
+    ],
+)
+def test_corrupt_state_is_rebuilt_at_load(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    state: dict[str, object],
+    field: str,
+) -> None:
+    state_path = write_state(tmp_path, state)
+
+    with caplog.at_level(logging.INFO):
+        manager = start_manager(fake_client, make_config, fake_clock, state_path)
+
+    assert_rebuilt(manager, fake_client, fake_clock, state_path)
+    assert_one_corrupt_error(caplog, state_path, field)
+
+
+def swap_poll(manager: IncidentManager) -> None:
+    manager.evaluate_swap_needed(["Ryu"], [], swap_message)
+
+
+def withdraw_poll(manager: IncidentManager) -> None:
+    manager.withdraw_swap_needed(["Juri"])
+
+
+def stuck_poll(manager: IncidentManager) -> None:
+    manager.evaluate_stuck_farm(active=True, build_message=stuck_message)
+
+
+def recovered_poll(manager: IncidentManager) -> None:
+    manager.evaluate_stuck_farm(active=False, build_message=stuck_message)
+
+
+@pytest.mark.parametrize(
+    ("incidents", "poll", "field"),
+    [
+        pytest.param([{"a": 1}], swap_poll, "incidents", id="incidents-list"),
+        pytest.param(
+            {
+                SWAP_NEEDED: {
+                    "receipt": "r",
+                    "opened_at": 999_000.0,
+                    "expire": 10800,
+                    "retry": 120,
+                    "acked_at": 0,
+                }
+            },
+            swap_poll,
+            "incidents.swap_needed.character",
+            id="swap-without-character",
+        ),
+        pytest.param(
+            {
+                SWAP_NEEDED: {
+                    "receipt": "r",
+                    "opened_at": 999_000.0,
+                    "expire": 10800,
+                    "retry": 120,
+                    "acked_at": 0,
+                }
+            },
+            withdraw_poll,
+            "incidents.swap_needed.character",
+            id="swap-without-character-withdraw",
+        ),
+        pytest.param(
+            {SWAP_NEEDED: ["Juri"]},
+            swap_poll,
+            "incidents.swap_needed",
+            id="swap-incident-list",
+        ),
+        pytest.param(
+            {
+                STUCK_FARM: {
+                    "receipt": "r",
+                    "opened_at": 999_000.0,
+                    "expire": 10800,
+                    "retry": 120,
+                    "acked_at": "yesterday",
+                }
+            },
+            stuck_poll,
+            "incidents.stuck_farm.acked_at",
+            id="acked_at-string",
+        ),
+        pytest.param(
+            {
+                STUCK_FARM: {
+                    "receipt": "r",
+                    "opened_at": "soon",
+                    "retry": 120,
+                    "acked_at": 0,
+                }
+            },
+            stuck_poll,
+            "incidents.stuck_farm.opened_at",
+            id="opened_at-string-expire-missing",
+        ),
+        pytest.param(
+            {
+                STUCK_FARM: {
+                    "receipt": "r",
+                    "opened_at": 999_000.0,
+                    "retry": 120,
+                    "acked_at": 0,
+                }
+            },
+            stuck_poll,
+            "incidents.stuck_farm.expire",
+            id="expire-missing",
+        ),
+        pytest.param(
+            {
+                STUCK_FARM: {
+                    "receipt": "r",
+                    "opened_at": "soon",
+                    "expire": 10800,
+                    "retry": 120,
+                    "acked_at": 0,
+                }
+            },
+            recovered_poll,
+            "incidents.stuck_farm.opened_at",
+            id="opened_at-string-cancel-fails",
+        ),
+    ],
+)
+def test_corrupt_incident_is_rebuilt_before_a_poll_reads_it(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    incidents: object,
+    poll: Callable[[IncidentManager], None],
+    field: str,
+) -> None:
+    state_path = write_state(
+        tmp_path,
+        {"incidents": incidents, "last_change_at": 999_000.0, "pending_cancel": {}},
+    )
+    # Every reader of the incident is reachable: its receipt reads as
+    # un-acknowledged, and cancelling it fails.
+    fake_client.receipt_info["r"] = {"acknowledged": 0}
+    fake_client.cancel_result = False
+
+    with caplog.at_level(logging.INFO):
+        manager = start_manager(fake_client, make_config, fake_clock, state_path)
+        poll(manager)
+
+    # The file's incident is gone before the poll: the startup sweep cancelled
+    # its alert by tag, and nothing checked or cancelled its receipt.
+    assert fake_client.cancelled_tags == ALL_EMERGENCY_TAGS
+    assert fake_client.checked == []
+    assert fake_client.cancelled == []
+    assert manager.pending_cancel == {}
+    assert_one_corrupt_error(caplog, state_path, field)
+
+
+def test_non_utf8_state_file_is_rebuilt(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    state_path = tmp_path / "notification_state.json"
+    # Saved in a Windows code page, as Notepad's "ANSI" does: é is one byte.
+    state_path.write_bytes('{"incidents": {}, "note": "café"}'.encode("cp1252"))
+
+    with caplog.at_level(logging.INFO):
+        manager = start_manager(fake_client, make_config, fake_clock, state_path)
+
+    assert_rebuilt(manager, fake_client, fake_clock, state_path)
+    assert "UnicodeDecodeError" in caplog.text
+    assert str(state_path) in caplog.text
+
+
+def test_corrupt_state_found_on_restart_ends_in_a_fresh_state(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "notification_state.json"
+    running = IncidentManager(fake_client, make_config(), state_path, clock=fake_clock)
+    running.evaluate_stuck_farm(active=True, build_message=stuck_message)
+    # The file is damaged while the monitor is down.
+    damaged = json.loads(state_path.read_text(encoding="utf-8"))
+    damaged["pending_cancel"] = {"receipt-0": "abc"}
+    state_path.write_text(json.dumps(damaged), encoding="utf-8")
+
+    fake_clock.advance(60)
+    restarted = IncidentManager(
+        fake_client, make_config(), state_path, clock=fake_clock
+    )
+    assert restarted._needs_reconcile is True
+    restarted.reconcile_on_startup()
+    assert_rebuilt(restarted, fake_client, fake_clock, state_path)
+
+    # The rebuilt file is valid: the next start loads it and does not reconcile.
+    again = IncidentManager(fake_client, make_config(), state_path, clock=fake_clock)
+    assert again._needs_reconcile is False
+    again.reconcile_on_startup()
+    assert fake_client.cancelled_tags == ALL_EMERGENCY_TAGS
+
+
+def test_corrupt_state_log_names_field_and_file_but_no_credential(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    credentials = {
+        "pushover_app_key": "secret-app-key-7f3a",
+        "pushover_user_key": "secret-user-key-91c2",
+        "buckler_id": "secret-buckler-id-5d0e",
+        "buckler_r_id": "secret-buckler-r-id-c4b8",
+    }
+    # The bad value itself carries a credential, so echoing it would leak one.
+    state_path = write_state(
+        tmp_path,
+        {
+            "incidents": {
+                STUCK_FARM: {
+                    "receipt": ["secret-user-key-91c2"],
+                    "opened_at": 999_000.0,
+                    "expire": 10800,
+                }
+            }
+        },
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        start_manager(fake_client, make_config, fake_clock, state_path, **credentials)
+
+    assert_one_corrupt_error(caplog, state_path, "incidents.stuck_farm.receipt")
+    for secret in [*credentials.values(), "fake-app-key", "fake-user-key"]:
+        assert secret not in caplog.text
+
+
+# Each shape an earlier version wrote, newest last. Every emergency incident
+# has carried opened_at and expire since phase 1.
+VALID_STATES: dict[str, dict[str, Any]] = {
+    # Phase 1, 2026-06-12 (ca48009): no retry, pending_cancel a receipt list.
+    "phase-1": {
+        "incidents": {
+            STUCK_FARM: {
+                "receipt": "r-stuck",
+                "opened_at": 990_000.0,
+                "expire": 10800,
+                "acked_at": 0,
+            },
+            API_DOWN: {"opened_at": 995_000.0},
+        },
+        "last_change_at": 980_000.0,
+        "pending_cancel": ["r-old"],
+    },
+    # Phase 2, 2026-06-13, until PR #20: swap_needed, auth_expired, low_quota.
+    "pre-PR-20": {
+        "incidents": {
+            AUTH_EXPIRED: {
+                "receipt": "r-auth",
+                "opened_at": 990_000.0,
+                "expire": 10800,
+                "acked_at": 995_000,
+            },
+            SWAP_NEEDED: {
+                "receipt": "r-swap",
+                "opened_at": 990_000.0,
+                "expire": 10800,
+                "acked_at": 0,
+                "character": "Juri",
+            },
+            LOW_QUOTA: {"opened_at": 995_000.0},
+        },
+        "last_change_at": 980_000.0,
+        "pending_cancel": [],
+    },
+    # PR #20, 2026-07-06, until PR #24: retry, and deadlines for parked cancels.
+    "pre-PR-24": {
+        "incidents": {
+            STUCK_FARM: {
+                "receipt": "r-stuck",
+                "opened_at": 990_000.0,
+                "expire": 10800,
+                "retry": 120,
+                "acked_at": 0,
+            }
+        },
+        "last_change_at": 980_000.0,
+        "pending_cancel": {"r-old": 1_003_000.0},
+    },
+    # PR #24, 2026-10-05, onward: last_increased_characters. PR #26 changed
+    # database.json, not this file, so a pre-PR-26 state is today's shape.
+    "pre-PR-26-and-current": {
+        "incidents": {
+            SWAP_NEEDED: {
+                "receipt": "r-swap",
+                "opened_at": 990_000.0,
+                "expire": 10800,
+                "retry": 120,
+                "acked_at": 0,
+                "character": "Juri",
+            },
+            API_DOWN: {"opened_at": 995_000.0},
+        },
+        "last_change_at": 980_000.0,
+        "last_increased_characters": ["Juri"],
+        "pending_cancel": {},
+    },
+    # Opened while Pushover was disabled, or a swap whose first send failed.
+    "receipt-less-incidents": {
+        "incidents": {
+            STUCK_FARM: {
+                "receipt": None,
+                "opened_at": 990_000.0,
+                "expire": 10800,
+                "retry": 120,
+                "acked_at": 0,
+            },
+            SWAP_NEEDED: {
+                "receipt": None,
+                "opened_at": 990_000.0,
+                "expire": 10800,
+                "retry": 120,
+                "acked_at": 0,
+                "character": "Juri",
+            },
+        },
+        "last_change_at": 980_000.0,
+        "last_increased_characters": [],
+        "pending_cancel": {},
+    },
+    "nulls": {
+        "incidents": None,
+        "last_change_at": None,
+        "last_increased_characters": None,
+        "pending_cancel": None,
+    },
+    "empty-object": {},
+    "last_change_at-zero": {"last_change_at": 0},
+    "last_change_at-negative": {"last_change_at": -5.0},
+}
+
+
+@pytest.mark.parametrize("name", list(VALID_STATES))
+def test_valid_and_legacy_state_loads_unchanged(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    name: str,
+) -> None:
+    state: dict[str, Any] = VALID_STATES[name]
+    state_path = write_state(tmp_path, state)
+
+    with caplog.at_level(logging.INFO):
+        manager = start_manager(fake_client, make_config, fake_clock, state_path)
+
+    assert caplog.records == []
+    assert fake_client.cancelled_tags == []
+    assert manager.incidents == (state.get("incidents") or {})
+    last_change_at = state.get("last_change_at") or 0
+    assert manager.last_change_at == (
+        last_change_at if last_change_at > 0 else fake_clock.now
+    )
+    assert manager.last_increased_characters == (
+        state.get("last_increased_characters") or []
+    )
+    pending_cancel = state.get("pending_cancel")
+    if isinstance(pending_cancel, list) and pending_cancel:
+        # The list form keeps its migration, which saves the new form.
+        deadline = fake_clock.now + (120 * PUSHOVER_MAX_RETRIES)
+        assert manager.pending_cancel == dict.fromkeys(pending_cancel, deadline)
+        saved = json.loads(state_path.read_text(encoding="utf-8"))
+        assert saved["pending_cancel"] == manager.pending_cancel
+    else:
+        assert manager.pending_cancel == (pending_cancel or {})
+        assert json.loads(state_path.read_text(encoding="utf-8")) == state
+
+
+def test_loaded_legacy_incidents_reach_every_reader(
+    fake_client: FakePushoverClient,
+    fake_clock: FakeClock,
+    make_config: Callable[..., ConfigData],
+    tmp_path: Path,
+) -> None:
+    # A phase-2 file (no retry) that passes validation drives the readers the
+    # corrupt cases above never reach: the re-arm subtraction, the expiry sum,
+    # the swap character, and the cancel deadline.
+    state_path = write_state(
+        tmp_path,
+        {
+            "incidents": {
+                STUCK_FARM: {
+                    "receipt": "r-stuck",
+                    "opened_at": 980_000.0,
+                    "expire": 10800,
+                    "acked_at": 0,
+                },
+                AUTH_EXPIRED: {
+                    "receipt": "r-auth",
+                    "opened_at": 990_000.0,
+                    "expire": 10800,
+                    "acked_at": 995_000,
+                },
+                SWAP_NEEDED: {
+                    "receipt": "r-swap",
+                    "opened_at": 990_000.0,
+                    "expire": 10800,
+                    "acked_at": 0,
+                    "character": "Juri",
+                },
+            },
+            "last_change_at": 980_000.0,
+            "pending_cancel": [],
+        },
+    )
+    manager = start_manager(fake_client, make_config, fake_clock, state_path)
+    fake_client.receipt_info["r-stuck"] = {"acknowledged": 0}
+
+    # opened_at + expire is past: re-raise.
+    manager.evaluate_stuck_farm(active=True, build_message=stuck_message)
+    # now - acked_at is past re_alert_after_ack: re-arm.
+    manager.evaluate_auth_expired(active=True, build_message=auth_message)
+    # The swap character is read on a flat poll and on a withdrawal.
+    manager.evaluate_swap_needed([], [], swap_message)
+    fake_client.cancel_result = False
+    manager.withdraw_swap_needed(["Juri"])
+
+    assert fake_client.cancelled_tags == []
+    assert [sent["tags"] for sent in fake_client.sent] == [
+        STUCK_FARM_TAG,
+        AUTH_EXPIRED_TAG,
+    ]
+    assert SWAP_NEEDED not in manager.incidents
+    # No retry in the file: the deadline falls back to the configured one.
+    assert manager.pending_cancel == {
+        "r-swap": 990_000.0 + (120 * PUSHOVER_MAX_RETRIES)
+    }
